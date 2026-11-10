@@ -2,7 +2,7 @@
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
 
-**Play Java ME phone games and NES cartridges on Windows, with optional local artwork enhancement.**
+**A Windows emulator for Java ME and NES games with optional local artwork enhancement.**
 
 Import your own `.jar` or `.nes` files, switch between the two libraries, and compare original artwork with cached enhancements. Pixel Revival uses [FreeJ2ME-Plus](https://github.com/TASEmulators/freej2me-plus) for Java ME and a pinned [MesenCE](https://github.com/nesdev-org/MesenCE) build for NES. The Windows launcher appears as **JAR Revival**.
 
