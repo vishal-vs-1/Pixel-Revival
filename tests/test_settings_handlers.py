@@ -6,6 +6,8 @@ import pytest
 import app as app_module
 from app import App
 from control_profiles import DEFAULT_SLOT_ID
+from systems.contracts import GameRef, JAVA_ME, NES
+from systems.ui_events import ApplicationEvent
 
 
 class Value:
@@ -62,7 +64,7 @@ def test_profile_selection_persists_preference_without_scheduling_deletion():
 
     App.set_control_profile(app)
 
-    app.library.set_control_profile_id.assert_called_once_with(game['id'], 'slot-1')
+    app.library.set_control_profile_id.assert_called_once_with(GameRef(JAVA_ME,game['id']), 'slot-1')
     assert game == {
         'id': 'a' * 64,
         'name': 'Fixture',
@@ -79,7 +81,7 @@ def test_default_selection_removes_only_profile_preference():
 
     App.set_control_profile(app)
 
-    app.library.set_control_profile_id.assert_called_once_with(game['id'], DEFAULT_SLOT_ID)
+    app.library.set_control_profile_id.assert_called_once_with(GameRef(JAVA_ME,game['id']), DEFAULT_SLOT_ID)
     assert game == {'id': 'a' * 64, 'render_scale': 4}
     app.library.delete_game.assert_not_called()
     assert app._delete_workers.calls == []
@@ -128,7 +130,7 @@ def deletion_app(game):
     app.messages = SimpleNamespace(put=Mock())
     app.library = SimpleNamespace(delete_game=Mock())
     app.game = lambda: game
-    app.refresh = Mock()
+    app._show_catalog = Mock()
     app._update_row_actions = Mock()
     return app
 
@@ -159,12 +161,16 @@ def test_confirmed_delete_submits_one_worker_and_reports_result(monkeypatch, fai
 
     assert len(app._delete_workers.calls) == 1
     assert game['id'] in app.deleting_games
+    app._show_catalog.assert_called_once_with()
     app.library.delete_game.assert_not_called()
 
     app._delete_workers.calls[0]()
 
-    app.library.delete_game.assert_called_once_with(game['id'])
-    expected = ('deleted', game) if failure is None else ('delete_error', (game, str(failure)))
+    app.library.delete_game.assert_called_once_with(GameRef(JAVA_ME,game['id']))
+    expected = (('deleted',ApplicationEvent('deleted',JAVA_ME,game['id'],game['name']))
+                if failure is None else
+                ('delete_error',ApplicationEvent('delete_error',JAVA_ME,game['id'],
+                                                  f"{game['name']}\n{failure}")))
     app.messages.put.assert_called_once_with(expected)
 
 
@@ -194,25 +200,30 @@ class SettingsDialog:
         self.top = SettingsWindow(exists)
 
 
-def test_settings_opens_without_a_selected_game_and_reuses_one_window(monkeypatch):
+@pytest.mark.parametrize('system', [JAVA_ME, NES])
+def test_settings_opens_for_current_system_without_a_selected_game(monkeypatch, system):
     store = object()
     app = App.__new__(App)
     app.root = object()
     app.library = SimpleNamespace(control_profiles=store)
+    app.nes_control_profiles = object()
     app.settings_dialog = None
+    app.visible_system_id = system
     app.game_if_selected = Mock(side_effect=AssertionError('Settings must not depend on a game'))
     created = []
 
-    def create_dialog(parent, actual_store, on_saved):
+    def create_dialog(parent, actual_store, on_saved, **options):
         dialog = SettingsDialog()
-        created.append((dialog, parent, actual_store, on_saved))
+        created.append((dialog, parent, actual_store, on_saved, options))
         return dialog
 
     monkeypatch.setattr(app_module, 'ControlProfileDialog', create_dialog)
 
     App.open_settings(app)
-    first, parent, actual_store, callback = created[0]
-    assert parent is app.root and actual_store is store
+    first, parent, actual_store, callback, options = created[0]
+    assert parent is app.root and actual_store is options['stores'][system]
+    assert options['schema'].system_id == system
+    assert options['stores'] == {'j2me': store, 'nes': app.nes_control_profiles}
     assert callback.__self__ is app and callback.__name__ == '_control_profiles_changed'
 
     App.open_settings(app)

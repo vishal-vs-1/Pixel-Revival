@@ -12,7 +12,7 @@ classes = ROOT / 'build' / 'classes'
 test_classes = ROOT / 'build' / 'runtime-asset-check-classes'
 test_classes.mkdir(parents=True, exist_ok=True)
 classpath = str(classes)
-sources = [ROOT / 'tests' / name for name in (
+sources = [ROOT / 'tests' / 'java' / name for name in (
     'RuntimeCaptureCheck.java', 'RuntimeTextureCheck.java', 'RuntimeObservationCheck.java')]
 subprocess.run([locate_java('javac'), '--release', '8', '-cp', classpath,
                 '-d', str(test_classes), *(str(path) for path in sources)], check=True)

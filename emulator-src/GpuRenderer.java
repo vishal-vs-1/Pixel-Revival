@@ -19,6 +19,7 @@ public final class GpuRenderer {
     private static final FrameBackpressure FRAMES=new FrameBackpressure(2);
     private static final WeakHashMap<PlatformImage,Layer> LAYERS=new WeakHashMap<PlatformImage,Layer>();
     private static final ArrayList<Layer> ALLOCATED=new ArrayList<Layer>();
+    private static volatile GraphicsBackend ACTIVE;
     private static final int S=Enhancement.SCALE;
     private static final class Frame {
         final int w,h,texture,framebuffer;
@@ -38,6 +39,16 @@ public final class GpuRenderer {
     public static String device="OpenGL";
     private static int boundFramebuffer=-1;
     private static final int[][] CORNERS={{0,1,2,3},{3,2,1,0},{1,0,3,2},{2,3,0,1},{0,3,2,1},{3,0,1,2},{1,2,3,0},{2,1,0,3}};
+
+    /** Selects the guarded common backend after the window thread has a live context. */
+    static synchronized void selectBackend(GraphicsBackend backend) {
+        if (backend != null && !backend.common()) throw new IllegalArgumentException("Only a common backend may be selected");
+        if (ACTIVE != null && backend != null) throw new IllegalStateException("Graphics backend is already selected");
+        ACTIVE=backend;
+    }
+    static String backendName() { GraphicsBackend backend=ACTIVE; return backend==null?"legacy-java":backend.name(); }
+    static boolean commonSelected() { return ACTIVE!=null; }
+    static boolean supportsReadback() { GraphicsBackend backend=ACTIVE; return backend==null || backend.readbackSupported(); }
 
     private static final class Layer {
         final int w,h;
@@ -73,9 +84,13 @@ public final class GpuRenderer {
         }
         return result;
     }
-    public static synchronized void observe(PlatformImage image) {layer(image);}
+    public static synchronized void observe(PlatformImage image) {
+        GraphicsBackend backend=ACTIVE;if(backend!=null){backend.observe(image);return;}
+        layer(image);
+    }
     /** Queue an HD replacement after the current committed frame; GL remains on its owner thread. */
     public static synchronized boolean stageReplacement(final PlatformImage image, final BufferedImage texture) {
+        GraphicsBackend backend=ACTIVE;if(backend!=null)return backend.stageReplacement(image,texture);
         if (closing || image == null || texture == null) return false;
         Layer target=LAYERS.get(image);
         if(target==null) { image.hdCanvas=texture; return true; }
@@ -91,6 +106,7 @@ public final class GpuRenderer {
         return queued;
     }
     public static synchronized void derive(PlatformImage image,PlatformImage source,int x,int y,int w,int h,int transform) {
+        GraphicsBackend backend=ACTIVE;if(backend!=null){backend.derive(image,source,x,y,w,h,transform);return;}
         Layer src=layer(source),dst=layer(image);flushDirty(src);
         enqueue(()->draw(src,dst,x,y,w,h,0,0,dst.w,dst.h,transform,true,new Rectangle(0,0,dst.w,dst.h)));
     }
@@ -100,6 +116,7 @@ public final class GpuRenderer {
         return result;
     }
     public static synchronized void pixel(PlatformImage image,int index,int value) {
+        GraphicsBackend backend=ACTIVE;if(backend!=null){backend.pixel(image,index,value);return;}
         Layer target=layer(image);
         if(index<0 || index>=target.pending.length)return;
         target.pending[index]=value;target.dirty.set(index);
@@ -121,6 +138,7 @@ public final class GpuRenderer {
         });
     }
     public static synchronized void textPatch(PlatformGraphics graphics,int x,int y,int w,int h,int[] pixels,int rasterScale) {
+        GraphicsBackend backend=ACTIVE;if(backend!=null){backend.textPatch(graphics,x,y,w,h,pixels,rasterScale);return;}
         Layer destination=layer(graphics.baseImage);flushDirty(destination);
         Rectangle clip=clip(graphics);
         enqueue(() -> {
@@ -130,6 +148,7 @@ public final class GpuRenderer {
         });
     }
     public static synchronized void fill(PlatformGraphics graphics,int x,int y,int w,int h) {
+        GraphicsBackend backend=ACTIVE;if(backend!=null){backend.fill(graphics,x,y,w,h);return;}
         if(w<=0||h<=0)return;
         Layer destination=layer(graphics.baseImage);flushDirty(destination);
         Rectangle clip=clip(graphics);
@@ -147,6 +166,7 @@ public final class GpuRenderer {
     }
     public static synchronized void blit(PlatformGraphics graphics,PlatformImage image,int sx,int sy,int sw,int sh,
                                          int x,int y,int dw,int dh,int transform,boolean flush) {
+        GraphicsBackend backend=ACTIVE;if(backend!=null){backend.blit(graphics,image,sx,sy,sw,sh,x,y,dw,dh,transform,flush);return;}
         if(sw<=0||sh<=0||dw<=0||dh<=0||sx<0||sy<0||sx+sw>image.getWidth()||sy+sh>image.getHeight())return;
         Enhancement.ensureRequested(image);
         Layer source=layer(image),destination=layer(graphics.baseImage);
@@ -178,6 +198,7 @@ public final class GpuRenderer {
         if(temp!=0)glDeleteTextures(temp);
     }
     public static synchronized void sync(PlatformImage image,int x,int y,int w,int h) {
+        GraphicsBackend backend=ACTIVE;if(backend!=null){backend.sync(image,x,y,w,h);return;}
         Layer destination=layer(image);flushDirty(destination);
         int left=Math.max(0,x),top=Math.max(0,y),right=Math.min(image.getWidth(),x+w),bottom=Math.min(image.getHeight(),y+h);
         if(right<=left||bottom<=top)return;
@@ -190,6 +211,7 @@ public final class GpuRenderer {
         });
     }
     public static void publish(PlatformImage image) {
+        GraphicsBackend backend=ACTIVE;if(backend!=null){if(!closing)backend.publish(image);return;}
         // Never wait for the GPU while holding its shared surface lock.
         if(closing||!FRAMES.acquire())return;
         synchronized(GpuRenderer.class) {
@@ -268,12 +290,14 @@ public final class GpuRenderer {
     }
     /** Drain within an input-poll budget; commands remain ordered across frames. */
     public static int pump(long budgetNanos) {
+        GraphicsBackend backend=ACTIVE;if(backend!=null){int count=backend.pump(budgetNanos);submittedFrames=backend.submittedFrames();return count;}
         long start=System.nanoTime();int count=0;Runnable command;
         while((command=QUEUE.poll())!=null){command.run();count++;if(System.nanoTime()-start>budgetNanos)break;}
         return count;
     }
     public static void drain() {while(pump(1000000000L)>0){} }
     public static void present(int width,int height) {
+        GraphicsBackend backend=ACTIVE;if(backend!=null){backend.present(width,height);return;}
         glBindFramebuffer(GL_FRAMEBUFFER,0);boundFramebuffer=0;projection(width,height);glDisable(GL_SCISSOR_TEST);glDisable(GL_BLEND);
         glClearColor(.035f,.055f,.08f,1);glClear(GL_COLOR_BUFFER_BIT);
         Frame image=presented;
@@ -287,6 +311,7 @@ public final class GpuRenderer {
         }
     }
     public static synchronized BufferedImage readback(PlatformImage image) {
+        GraphicsBackend backend=ACTIVE;if(backend!=null)return backend.readback(image);
         Layer layer=LAYERS.get(image);if(layer==null)throw new IllegalArgumentException("Image has no GPU surface");
         flushDirty(layer);drain();target(layer);
         ByteBuffer bytes=MemoryUtil.memAlloc(layer.w*S*layer.h*S*4);
@@ -303,13 +328,22 @@ public final class GpuRenderer {
         }finally{MemoryUtil.memFree(bytes);}
     }
     public static void cleanup() {
+        GraphicsBackend backend=ACTIVE;if(backend!=null){backend.cleanup();return;}
         if(!QUEUE.isEmpty())return;
         Iterator<Layer> it=ALLOCATED.iterator();
         while(it.hasNext()){Layer l=it.next();if(l.owner.get()==null){glDeleteTextures(l.texture);glDeleteFramebuffers(l.framebuffer);it.remove();}}
     }
-    public static void shutdown(){closing=true;FRAMES.close();QUEUE.clear();for(Layer l:ALLOCATED){glDeleteTextures(l.texture);glDeleteFramebuffers(l.framebuffer);}ALLOCATED.clear();if(presented!=null)presented.destroy();if(spare!=null)spare.destroy();presented=null;spare=null;}
-    public static long fastScalerPasses(){return FastTextureScaler.completedPasses();}
-    public static long fastScalerFallbacks(){return FastTextureScaler.fallbackCount();}
-    public static long fastScalerSubmitNanos(){return FastTextureScaler.lastSubmitNanos();}
-    public static boolean warmupFastScaler(){return FastTextureScaler.warmup();}
+    static void stopFramePublication(){
+        closing=true;
+        GraphicsBackend backend=ACTIVE;if(backend!=null)backend.stopFramePublication();
+    }
+    public static void shutdown(){
+        GraphicsBackend backend=ACTIVE;
+        if(backend!=null){backend.shutdown();ACTIVE=null;return;}
+        closing=true;FRAMES.close();QUEUE.clear();for(Layer l:ALLOCATED){glDeleteTextures(l.texture);glDeleteFramebuffers(l.framebuffer);}ALLOCATED.clear();if(presented!=null)presented.destroy();if(spare!=null)spare.destroy();presented=null;spare=null;
+    }
+    public static long fastScalerPasses(){GraphicsBackend backend=ACTIVE;return backend!=null?backend.scalerPasses():FastTextureScaler.completedPasses();}
+    public static long fastScalerFallbacks(){GraphicsBackend backend=ACTIVE;return backend!=null?backend.scalerFallbacks():FastTextureScaler.fallbackCount();}
+    public static long fastScalerSubmitNanos(){GraphicsBackend backend=ACTIVE;return backend!=null?backend.scalerSubmitNanos():FastTextureScaler.lastSubmitNanos();}
+    public static boolean warmupFastScaler(){GraphicsBackend backend=ACTIVE;return backend!=null?backend.warmupScaler():FastTextureScaler.warmup();}
 }

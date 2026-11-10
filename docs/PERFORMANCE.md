@@ -23,7 +23,7 @@ The CPU row uses deterministic Scale2x, not neural inference; it produces a diff
 
 The model throughput benchmark measures invocation and image processing. It does not include all archive inspection, persistent cache validation and publishing. A separate isolated service run processed 256 sources in 37.491 seconds end-to-end, including registration, validation, queue/storage work, image writing and ready-index publication.
 
-The player does not wait for every artwork job before starting. Prepared artwork is reused; a missing replacement falls back to the game's normal source/render path. Background work is bounded and yields while the game is active unless current resource and frame measurements permit a small job.
+The player can start before every artwork job finishes. Prepared artwork is reused, and missing replacements use the game's original artwork. During Java ME play, the artwork service admits small jobs only when frame and resource measurements allow it. NES Enhanced records tiles while playing and prepares replacements after the player closes.
 
 ## Reproduce
 

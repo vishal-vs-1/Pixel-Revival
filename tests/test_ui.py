@@ -10,6 +10,8 @@ import pytest
 from app import App
 from control_profiles import ControlProfileStore
 from engine import atomic_json
+from runtime_assets.contracts import pixel_recipe
+from systems.contracts import ImportRequest, JAVA_ME, NES
 from ui_widgets import ScrollableFrame
 
 
@@ -53,6 +55,10 @@ class PreviewLibrary:
         self.deleted=[]
 
     def games(self):return [dict(row) for row in self.rows]
+    def recipe_for_backend(self,backend):
+        if backend!='pixel':raise ValueError('Unsupported test artwork backend')
+        return pixel_recipe(),None
+    def recover_assets(self,on_error,should_stop):pass
     def workspace(self,identity):return self.rendered/identity
     def texture_dir(self,folder,backend):return folder/'textures'
     def delete_game(self,identity,progress=lambda text:None):
@@ -63,7 +69,10 @@ class PreviewLibrary:
 
 def make_app(root,monkeypatch,base,*,count=20):
     library=PreviewLibrary(base,count)
-    monkeypatch.setattr('app.Library',lambda:library)
+    monkeypatch.setattr('app.Library',lambda **kwargs:library)
+    monkeypatch.setattr('app.DATA_ROOT',base)
+    monkeypatch.setattr('app.APP_ROOT',base)
+    monkeypatch.setattr('app.RESOURCE_ROOT',base)
     monkeypatch.setattr('app.gpu_devices',lambda:[])
     monkeypatch.setattr('ai_backend.available',lambda:False)
     app=App(root)
@@ -71,6 +80,22 @@ def make_app(root,monkeypatch,base,*,count=20):
     root.title('JAR Revival UI check — test data only')
     root.update()
     return app,library
+
+
+def test_global_renderer_choice_is_separate_from_physical_gpu(root,tmp_path,monkeypatch):
+    app,_=make_app(root,monkeypatch,tmp_path,count=1)
+    assert app.graphics_backend_choice.get()=='Shared GPU · common-v1'
+    physical_gpu=app.render_gpu.get()
+
+    app.graphics_backend_choice.set('Legacy GPU · compatibility')
+    app.set_graphics_backend()
+    assert app.graphics_backend_store.load().backend=='legacy'
+    assert app.render_gpu.get()==physical_gpu
+
+    app.graphics_backend_choice.set('Shared GPU · common-v1')
+    app.set_graphics_backend()
+    assert app.graphics_backend_store.load().backend=='common-v1'
+    assert 'Legacy GPU compatibility' in app.status.get()
 
 
 def test_wheel_scrolls_only_the_panel_containing_the_event(root):
@@ -221,3 +246,87 @@ def test_row_actions_target_clicked_game_and_follow_scroll(root,tmp_path,monkeyp
     assert library.deleted==[] and confirm.call_count==1
     app.search.set('Test game 01');root.update()
     assert set(app.row_actions.buttons)=={ids[0]}
+
+
+def test_nes_mode_uses_rom_picker_profile_aspect_and_honest_player_status(root,tmp_path,monkeypatch):
+    app,_=make_app(root,monkeypatch,tmp_path,count=1)
+    app.system_buttons[NES].invoke()
+    assert app.visible_system_id=='nes'
+    assert app.system_buttons[NES].instate(['selected'])
+    assert root.cget('bg')=='#080808'
+    assert app.tab_navigation.buttons[0].cget('bg')=='#f5f5f5'
+    assert (tmp_path/'config'/'application.json').is_file()
+
+    source=tmp_path/'Synthetic.nes'
+    source.write_bytes(b'NES\x1a\x01'+bytes(11)+bytes(16384))
+    nes_backend=app.library._systems.get('nes')
+    game=nes_backend.import_game(ImportRequest('nes',source,'pixel'))
+    app.refresh();root.update()
+    assert app.tree.get_children()==(game['id'],)
+    assert app.nes_cartridge_info.get().startswith('INES cartridge\nMapper 0')
+    assert str(app.play_button.cget('state'))=='disabled'
+    assert 'setup is required' in app.nes_runtime_info.get()
+    assert app.aspect.get()=='4:3'
+
+    app.aspect.set('16:15')
+    app.set_aspect()
+    assert nes_backend.games()[0]['aspect']=='16:15'
+    launch=Mock();monkeypatch.setattr(app,'launch_game',launch)
+    app.play(game=game)
+    launch.assert_not_called()
+
+    chosen=tmp_path/'Choose.nes'
+    monkeypatch.setattr('app.filedialog.askopenfilename',lambda **kwargs:str(chosen))
+    app.start_pending=Mock()
+    app.import_game()
+    assert app.pending_imports[-1]==ImportRequest(NES,chosen,'pixel')
+    app.system_buttons[JAVA_ME].invoke()
+    assert app.system_buttons[JAVA_ME].instate(['selected'])
+    assert root.cget('bg')=='#0c121c'
+    assert app.tab_navigation.buttons[0].cget('bg')=='#84e4c7'
+    app.library.close(timeout=0.1)
+
+
+def test_nes_play_offers_enhanced_capture_and_original_modes(root,tmp_path,monkeypatch):
+    app,_=make_app(root,monkeypatch,tmp_path,count=1)
+    app.system_buttons[NES].invoke()
+    nes_backend=app.library._systems.get(NES)
+    nes_backend._runtime=Mock()
+    nes_backend._runtime.capture_available.return_value=True
+    game={
+        'id':'a'*64,'system':NES,'name':'Test cartridge','runtime_status':'ready',
+        'backend':'pixel','render_scale':2,'aspect':'4:3',
+        'nes':{'container':'ines','mapper':0,'submapper':0,'region':'ntsc'},
+    }
+    app._show_nes_game(game)
+    root.update()
+    assert app.play_button.cget('text').endswith('Play enhanced')
+    assert app.compare_button.cget('text')=='Play original'
+    assert str(app.compare_button.cget('state'))=='normal'
+    assert app.compare_button.winfo_ismapped()
+
+    launch=Mock();monkeypatch.setattr(app,'launch_game',launch)
+    app.play(game=game)
+    app.play(original=True,game=game)
+    assert launch.call_args_list[0].args==(game,False)
+    assert launch.call_args_list[0].kwargs=={'capture':True}
+    assert launch.call_args_list[1].args==(game,True)
+    assert launch.call_args_list[1].kwargs=={'capture':False}
+    app.library.close(timeout=0.1)
+
+
+def test_nes_original_playback_stays_available_without_capture_support(root,tmp_path,monkeypatch):
+    app,_=make_app(root,monkeypatch,tmp_path,count=1)
+    app.system_buttons[NES].invoke()
+    game={
+        'id':'b'*64,'system':NES,'name':'Old runtime cartridge','runtime_status':'ready',
+        'backend':'pixel','render_scale':2,'aspect':'4:3',
+        'nes':{'container':'ines','mapper':0,'submapper':0,'region':'ntsc'},
+    }
+
+    app._show_nes_game(game)
+
+    assert str(app.play_button.cget('state'))=='disabled'
+    assert app.compare_button.cget('text')=='Play original'
+    assert str(app.compare_button.cget('state'))=='normal'
+    app.library.close(timeout=0.1)

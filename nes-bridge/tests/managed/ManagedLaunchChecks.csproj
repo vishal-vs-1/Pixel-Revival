@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../managed/RevivalLaunch.cs" Link="RevivalLaunch.cs" />
+    <Compile Include="../../managed/ManagedLaunchStartup.cs" Link="ManagedLaunchStartup.cs" />
+    <Compile Include="../../managed/RevivalNesControls.cs" Link="RevivalNesControls.cs" />
+    <Compile Include="../../managed/ManagedHdPackValidator.cs" Link="ManagedHdPackValidator.cs" />
+    <Compile Include="../../managed/ManagedHdPackStager.cs" Link="ManagedHdPackStager.cs" />
+    <Compile Include="../../managed/ManagedHdPlaybackStatus.cs" Link="ManagedHdPlaybackStatus.cs" />
+  </ItemGroup>
+</Project>

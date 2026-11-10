@@ -10,7 +10,7 @@ sys.path.insert(0,str(ROOT))
 from engine import locate_java, image_id
 
 classes=ROOT/'build/classes'
-subprocess.run([locate_java('javac'),'--release','8','-cp',str(classes),'-d',str(classes),str(ROOT/'tests/RendererCheck.java')],check=True)
+subprocess.run([locate_java('javac'),'--release','8','-cp',str(classes),'-d',str(classes),str(ROOT/'tests/java/RendererCheck.java')],check=True)
 result=subprocess.run([locate_java(),'-Djava.awt.headless=true','-Djme.scale=4','-cp',str(classes),'RendererCheck',str(ROOT/'build/renderer-check.png')],capture_output=True,text=True,timeout=30)
 print(result.stdout)
 print(result.stderr)

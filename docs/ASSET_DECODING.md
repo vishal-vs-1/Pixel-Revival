@@ -1,6 +1,6 @@
 # Asset discovery and decoder contracts
 
-Import and play use the same generic asset pipeline. Import reads standard image resources, embedded PNGs, and structurally validated containers. At runtime, shared emulator hooks observe decoded immutable images, stable offscreen snapshots, and sampled raw RGB blocks. The game continues to run its own decoder. No title name, archive hash, class name, or codec fingerprint selects an enhancement path.
+Java ME import and play use the same generic asset pipeline. Import reads standard image resources, embedded PNGs, and structurally validated containers. At runtime, emulator hooks observe decoded immutable images, stable offscreen snapshots, and sampled raw RGB blocks. The game continues to run its own decoder.
 
 | Responsibility | Implementation | Contract |
 |---|---|---|
@@ -23,3 +23,7 @@ Source preparation is reused only when the JAR, reader versions, and indexed fil
 This pipeline recognizes common stored image formats and observes images after a game has decoded them. It cannot infer every private sprite layout from arbitrary bytes. Packed binary data may represent images, palettes, maps, sound, or other structures; unknown data is left for the game’s normal runtime logic. Continuously changing screen buffers remain on the fast render path, and unseen game states are not counted as prepared assets.
 
 Add new shared readers only for formats validated by structure and bounds. Emit normalized images through `AssetSink`; preserve animation and frame provenance without changing game coordinates. Keep format support independent from the upscaler, renderer, UI, and input handling.
+
+## NES tile discovery
+
+NES Enhanced observes tiles and palettes from managed MesenCE. The capture bridge writes bounded chunks and the NES adapter turns those records into source PNGs and tile bindings. The same shared artwork queue prepares Fast Pixel or AI Cartoon outputs. Once the player closes, the pack generator can publish ready replacements for the next Enhanced launch. Pack bindings preserve tile and palette identity. Coverage depends on the scenes captured during play.

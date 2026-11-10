@@ -4,7 +4,7 @@ ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 from engine import locate_java
 classes=ROOT/'build/classes';out=ROOT/'build/gpu-check';out.mkdir(exist_ok=True)
 classpath=str(classes)+os.pathsep+str(ROOT/'tools/gpu/*')
-subprocess.run([locate_java('javac'),'--release','8','-cp',classpath,'-d',str(classes),str(ROOT/'tests/GpuCheck.java'),str(ROOT/'tests/FastScalerCheck.java'),str(ROOT/'tests/RawRgbGpuCheck.java'),str(ROOT/'tests/M3gGpuCheck.java')],check=True)
+subprocess.run([locate_java('javac'),'--release','8','-cp',classpath,'-d',str(classes),str(ROOT/'tests/java/GpuCheck.java'),str(ROOT/'tests/java/FastScalerCheck.java'),str(ROOT/'tests/java/RawRgbGpuCheck.java'),str(ROOT/'tests/M3gGpuCheck.java')],check=True)
 subprocess.run([locate_java(),'-Djme.gpu=true','-Djme.scale=4','-cp',classpath,'GpuCheck',str(out/'proof.png')],cwd=out,check=True,timeout=45)
 subprocess.run([locate_java(),'-Djme.gpu=true','-Djme.scale=2','-cp',classpath,'FastScalerCheck'],cwd=out,check=True,timeout=45)
 subprocess.run([locate_java(),'-Djme.gpu=true','-Djme.scale=4','-cp',classpath,'FastScalerCheck'],cwd=out,check=True,timeout=45)

@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable
 
+from control_schema import ControlSchema, JME_CONTROL_SCHEMA, NES_CONTROL_SCHEMA
 from control_profiles import (
     ACTION_ORDER,
     CUSTOM_SLOT_IDS,
@@ -16,6 +17,7 @@ from control_profiles import (
     default_seed,
 )
 from ui_widgets import ScrollableFrame
+from ui_palette import java_color
 
 
 def keysym_to_token(keysym: str) -> str | None:
@@ -42,13 +44,23 @@ def _key_label(token: str | None) -> str:
 
 
 class ControlProfileDialog:
-    def __init__(self, parent, store, on_saved: Callable[[str], None]) -> None:
+    _color = staticmethod(java_color)
+
+    def __init__(self, parent, store, on_saved: Callable[[str], None],
+                 schema: ControlSchema = JME_CONTROL_SCHEMA, *, stores=None, color=java_color) -> None:
+        self._color = color
         self.store = store
         self.on_saved = on_saved
+        self.schema = schema
+        self.stores = dict(stores or {schema.system_id: store})
+        all_schemas = {JME_CONTROL_SCHEMA.system_id: JME_CONTROL_SCHEMA,
+                       NES_CONTROL_SCHEMA.system_id: NES_CONTROL_SCHEMA,
+                       schema.system_id: schema}
+        self.schemas = {system_id: all_schemas[system_id] for system_id in self.stores}
         self.result = store.load()
         self.top = tk.Toplevel(parent)
         self.top.title("Settings")
-        self.top.configure(bg="#121c29")
+        self.top.configure(bg=self._color("#121c29"))
         self.top.transient(parent)
         self.top.resizable(True, True)
         self.top.geometry("560x700")
@@ -56,9 +68,9 @@ class ControlProfileDialog:
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         self.top.bind("<Escape>", self._escape)
 
-        self.slot_labels = {slot: f"Profile {index}" for index, slot in enumerate(CUSTOM_SLOT_IDS, 1)}
+        self.slot_labels = {slot: f"Profile {index}" for index, slot in enumerate(schema.custom_slot_ids, 1)}
         self.profiles = {profile.slot_id: profile for profile in self.result.slots}
-        self.slot = tk.StringVar(value=CUSTOM_SLOT_IDS[0])
+        self.slot = tk.StringVar(value=schema.custom_slot_ids[0])
         self.name = tk.StringVar()
         self.slot_status = tk.StringVar()
         self.capture_status = tk.StringVar(value="Choose a key or press Capture.")
@@ -66,52 +78,63 @@ class ControlProfileDialog:
         self.capture_button = None
         self.capture_binding = None
         self.capture_focus_binding = None
+        self.system = tk.StringVar(value=schema.system_id)
         self.bindings: dict[str, str | None] = {}
         self.binding_vars: dict[str, tk.StringVar] = {}
         self.binding_combos: dict[str, ttk.Combobox] = {}
         self.baseline: tuple[str, tuple[tuple[str, str | None], ...]] | None = None
         self._build(parent)
-        self._load_slot(CUSTOM_SLOT_IDS[0])
+        self._load_slot(self.schema.custom_slot_ids[0])
         self.top.grab_set()
         self.top.focus_set()
 
     def _build(self, parent) -> None:
         self.top.columnconfigure(0, weight=1)
         self.top.rowconfigure(2, weight=1)
-        header = tk.Frame(self.top, bg="#121c29", padx=18, pady=14)
+        header = tk.Frame(self.top, bg=self._color("#121c29"), padx=18, pady=14)
         header.grid(row=0, column=0, sticky="ew")
-        tk.Label(header, text="Settings", bg="#121c29", fg="#eff5fc",
+        tk.Label(header, text="Settings", bg=self._color("#121c29"), fg=self._color("#eff5fc"),
                  font=("Segoe UI", 16, "bold")).pack(anchor="w")
-        tk.Label(header, text="Keyboard profiles", bg="#121c29", fg="#c4ffed",
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(5, 0))
-        tk.Label(header,
-                 text="Create up to three shared profiles. Choose a saved profile for each game in its Play tab.",
-                 bg="#121c29", fg="#9db7cc", wraplength=500, justify="left").pack(anchor="w", pady=(4, 0))
-        tk.Label(header, text="Editing a shared profile affects every game using it on its next launch.",
-                 bg="#121c29", fg="#7994ac", wraplength=500, justify="left").pack(anchor="w", pady=(4, 0))
+        self.schema_title = tk.Label(header, text=self.schema.title, bg=self._color("#121c29"), fg=self._color("#c4ffed"),
+                                     font=("Segoe UI", 10, "bold"))
+        self.schema_title.pack(anchor="w", pady=(5, 0))
+        self.schema_instructions = tk.Label(header, text=self.schema.instructions,
+                                            bg=self._color("#121c29"), fg=self._color("#9db7cc"), wraplength=500,
+                                            justify="left")
+        self.schema_instructions.pack(anchor="w", pady=(4, 0))
+        tk.Label(header, text="A profile applies only to games on its own system. Edits take effect on the next launch.",
+                 bg=self._color("#121c29"), fg=self._color("#7994ac"), wraplength=500, justify="left").pack(anchor="w", pady=(4, 0))
+        system_row = tk.Frame(header, bg=self._color("#121c29"))
+        system_row.pack(fill="x", pady=(10, 0))
+        tk.Label(system_row, text="Profile system", bg=self._color("#121c29"), fg=self._color("#9db7cc")).pack(side="left")
+        self.system_combo = ttk.Combobox(
+            system_row, textvariable=self.system, state="readonly",
+            values=tuple(self.schemas), width=16)
+        self.system_combo.pack(side="left", padx=(10, 0))
+        self.system_combo.bind("<<ComboboxSelected>>", self._select_system)
 
-        slots = tk.Frame(self.top, bg="#121c29", padx=18)
+        slots = tk.Frame(self.top, bg=self._color("#121c29"), padx=18)
         slots.grid(row=1, column=0, sticky="ew")
         slots.columnconfigure(0, weight=1)
         self.slot_combo = ttk.Combobox(slots, textvariable=self.slot, state="readonly", width=25)
         self.slot_combo.grid(row=0, column=0, sticky="ew")
         self.slot_combo.bind("<<ComboboxSelected>>", self._select_slot)
-        self.slot_status_label = tk.Label(slots, textvariable=self.slot_status, bg="#121c29", fg="#9db7cc",
+        self.slot_status_label = tk.Label(slots, textvariable=self.slot_status, bg=self._color("#121c29"), fg=self._color("#9db7cc"),
                                           justify="left", wraplength=490)
         self.slot_status_label.grid(row=1, column=0, sticky="w", pady=(6, 4))
 
-        self.rows = ScrollableFrame(self.top, bg="#121c29")
+        self.rows = ScrollableFrame(self.top, bg=self._color("#121c29"))
         self.rows.grid(row=2, column=0, sticky="nsew", padx=18, pady=(8, 0))
         body = self.rows.content
         body.configure(padx=0, pady=4)
         body.columnconfigure(0, weight=1)
-        for row, action in enumerate(ACTION_ORDER):
-            panel = tk.Frame(body, bg="#192636", padx=9, pady=6)
+        for row, action in enumerate(self.schema.actions):
+            panel = tk.Frame(body, bg=self._color("#192636"), padx=9, pady=6)
             panel.grid(row=row, column=0, sticky="ew", pady=2)
             panel.columnconfigure(0, weight=1)
-            required = " *" if action in REQUIRED_ACTIONS else ""
+            required = " *" if action in self.schema.required_actions else ""
             tk.Label(panel, text=action.replace("_", " ").title() + required,
-                     bg="#192636", fg="#dce7f5", anchor="w").grid(row=0, column=0, sticky="ew")
+                     bg=self._color("#192636"), fg=self._color("#dce7f5"), anchor="w").grid(row=0, column=0, sticky="ew")
             variable = tk.StringVar()
             combo = ttk.Combobox(panel, textvariable=variable, state="readonly", width=19)
             combo.grid(row=0, column=1, padx=(8, 5))
@@ -122,20 +145,20 @@ class ControlProfileDialog:
             self.binding_vars[action] = variable
             self.binding_combos[action] = combo
 
-        footer = tk.Frame(self.top, bg="#121c29", padx=18, pady=12)
+        footer = tk.Frame(self.top, bg=self._color("#121c29"), padx=18, pady=12)
         footer.grid(row=3, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
-        self.capture_label = tk.Label(footer, textvariable=self.capture_status, bg="#121c29",
-                                      fg="#9db7cc", anchor="w", justify="left", wraplength=360)
+        self.capture_label = tk.Label(footer, textvariable=self.capture_status, bg=self._color("#121c29"),
+                                      fg=self._color("#9db7cc"), anchor="w", justify="left", wraplength=360)
         self.capture_label.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        buttons = tk.Frame(footer, bg="#121c29")
+        buttons = tk.Frame(footer, bg=self._color("#121c29"))
         buttons.grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
         ttk.Button(buttons, text="Cancel", command=self.close).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Save profile", command=self.save).pack(side="left")
         self.slot_combo.configure(values=self._slot_options())
 
     def _slot_options(self) -> tuple[str, ...]:
-        return tuple(self._slot_label(slot) for slot in CUSTOM_SLOT_IDS)
+        return tuple(self._slot_label(slot) for slot in self.schema.custom_slot_ids)
 
     def _slot_label(self, slot_id: str) -> str:
         profile = self.profiles.get(slot_id)
@@ -143,10 +166,10 @@ class ControlProfileDialog:
         return f"{slot_id[-1]} · {name}"
 
     def _slot_from_label(self, label: str) -> str | None:
-        return next((slot for slot in CUSTOM_SLOT_IDS if label == self._slot_label(slot)), None)
+        return next((slot for slot in self.schema.custom_slot_ids if label == self._slot_label(slot)), None)
 
     def _state(self) -> tuple[str, tuple[tuple[str, str | None], ...]]:
-        return self.name.get(), tuple((action, self.bindings[action]) for action in ACTION_ORDER)
+        return self.name.get(), tuple((action, self.bindings[action]) for action in self.schema.actions)
 
     def _is_dirty(self) -> bool:
         return self.baseline is not None and self._state() != self.baseline
@@ -154,13 +177,13 @@ class ControlProfileDialog:
     def _refresh_slot_status(self) -> None:
         if self.result.problem:
             text = f"Could not read {self.store.path}: {self.result.problem} Move the file aside to create profiles."
-            color = "#ffb6b6"
+            color = self._color("#ffb6b6")
         elif self.profiles.get(self.loaded_slot) is None:
             text = "Not saved yet. Save this profile to make it available in games."
-            color = "#9db7cc"
+            color = self._color("#9db7cc")
         else:
             text = "Shared profile. Changes apply on the next launch."
-            color = "#9db7cc"
+            color = self._color("#9db7cc")
         self.slot_status.set(text)
         self.slot_status_label.configure(fg=color)
 
@@ -169,7 +192,7 @@ class ControlProfileDialog:
         self.loaded_slot = slot_id
         profile = self.profiles.get(slot_id)
         self.name.set(profile.name if profile else f"Profile {slot_id[-1]}")
-        self.bindings = dict(profile.bindings) if profile else default_seed()
+        self.bindings = dict(profile.bindings) if profile else self.schema.default_seed()
         self.baseline = self._state()
         self.slot.set(self._slot_label(slot_id))
         self._refresh_rows()
@@ -177,14 +200,58 @@ class ControlProfileDialog:
 
     def _refresh_rows(self) -> None:
         used_keys = {key for key in self.bindings.values() if key is not None}
-        for action in ACTION_ORDER:
+        for action in self.schema.actions:
             current = self.bindings[action]
-            choices = [key for key in sorted(SUPPORTED_KEYS) if key == current or key not in used_keys]
-            if action not in REQUIRED_ACTIONS:
+            choices = [key for key in sorted(self.schema.supported_keys) if key == current or key not in used_keys]
+            if action not in self.schema.required_actions:
                 choices.insert(0, None)
             labels = tuple(_key_label(key) for key in choices)
             self.binding_combos[action].configure(values=labels)
             self.binding_vars[action].set(_key_label(current))
+
+    def _rebuild_action_rows(self) -> None:
+        body = self.rows.content
+        for child in body.winfo_children():
+            child.destroy()
+        self.binding_vars.clear()
+        self.binding_combos.clear()
+        for row, action in enumerate(self.schema.actions):
+            panel = tk.Frame(body, bg=self._color("#192636"), padx=9, pady=6)
+            panel.grid(row=row, column=0, sticky="ew", pady=2)
+            panel.columnconfigure(0, weight=1)
+            tk.Label(panel, text=action.replace("_", " ").title(), bg=self._color("#192636"),
+                     fg=self._color("#dce7f5"), anchor="w").grid(row=0, column=0, sticky="ew")
+            variable = tk.StringVar()
+            combo = ttk.Combobox(panel, textvariable=variable, state="readonly", width=19)
+            combo.grid(row=0, column=1, padx=(8, 5))
+            combo.bind("<<ComboboxSelected>>", lambda event, key=action: self._pick_key(key))
+            capture = ttk.Button(panel, text="Capture")
+            capture.configure(command=lambda key=action, button=capture: self._arm_capture(key, button))
+            capture.grid(row=0, column=2)
+            self.binding_vars[action] = variable
+            self.binding_combos[action] = combo
+        self._load_slot(self.schema.custom_slot_ids[0])
+
+    def _select_system(self, event=None) -> None:
+        target = self.system.get()
+        if target == self.schema.system_id:
+            return
+        if self._is_dirty() and not messagebox.askyesno(
+                "Discard changes?", "Discard the unsaved changes to this profile?", parent=self.top):
+            self.system.set(self.schema.system_id)
+            return
+        self._disarm_capture()
+        self.store = self.stores[target]
+        self.schema = self.schemas[target]
+        self.schema_title.configure(text=self.schema.title)
+        self.schema_instructions.configure(text=self.schema.instructions)
+        self.result = self.store.load()
+        self.profiles = {profile.slot_id: profile for profile in self.result.slots}
+        self.slot_labels = {slot: f"Profile {index}" for index, slot in enumerate(self.schema.custom_slot_ids, 1)}
+        self.slot_combo.configure(values=self._slot_options())
+        self.name.set("")
+        self.capture_status.set("Choose a key or press Capture.")
+        self._rebuild_action_rows()
 
     def _change_binding(self, action: str, token: str | None) -> bool:
         if token is not None:
@@ -194,7 +261,7 @@ class ControlProfileDialog:
                 messagebox.showerror("Key already used", f"{_key_label(token)} is assigned to {conflict.replace('_', ' ').title()}.", parent=self.top)
                 self._refresh_rows()
                 return False
-        if token is None and action in REQUIRED_ACTIONS:
+        if token is None and action in self.schema.required_actions:
             messagebox.showerror("Key required", "Directions, Fire and both soft keys need a binding.", parent=self.top)
             self._refresh_rows()
             return False
@@ -205,7 +272,7 @@ class ControlProfileDialog:
     def _pick_key(self, action: str) -> None:
         label = self.binding_vars[action].get()
         token = None if label == "Unbound" else next(
-            (key for key in SUPPORTED_KEYS if _key_label(key) == label), None)
+            (key for key in self.schema.supported_keys if _key_label(key) == label), None)
         self._change_binding(action, token)
 
     def _select_slot(self, event=None) -> None:
@@ -281,9 +348,9 @@ class ControlProfileDialog:
     def save(self) -> None:
         slot_id = self._slot_from_label(self.slot.get())
         try:
-            profile = create_profile(slot_id, self.name.get(), self.bindings)
+            profile = self.schema.create_profile(slot_id, self.name.get(), self.bindings)
             saved = self.store.save_slot(profile.slot_id, profile.name, dict(profile.bindings))
-        except (OSError, ProfileValidationError, TypeError, ValueError) as error:
+        except (OSError, TypeError, ValueError) as error:
             messagebox.showerror("Could not save profile", str(error), parent=self.top)
             return
         self.profiles[saved.slot_id] = saved

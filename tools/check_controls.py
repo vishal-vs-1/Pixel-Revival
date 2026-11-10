@@ -6,7 +6,7 @@ from engine import locate_java
 classes=ROOT/'build/classes';out=ROOT/'build/control-check';out.mkdir(exist_ok=True)
 cp=str(classes)+os.pathsep+str(ROOT/'tools/gpu/*')
 names=['InputControllerCheck','MenuNavigationCheck','InputTargetCheck','InitialPaintCheck','HeldInputCheck','CanvasStatePolicyCheck','FramePipelineCheck']
-subprocess.run([locate_java('javac'),'--release','8','-cp',cp,'-d',str(classes),*[str(ROOT/'tests'/(name+'.java')) for name in names]],check=True)
+subprocess.run([locate_java('javac'),'--release','8','-cp',cp,'-d',str(classes),*[str(ROOT/'tests/java'/(name+'.java')) for name in names]],check=True)
 for name in names:
     result=subprocess.run([locate_java(),'-Djava.awt.headless=true','-Dfile.encoding=ISO_8859_1','-cp',cp,name],cwd=out,capture_output=True,text=True,timeout=15)
     print(result.stdout.strip(),flush=True)

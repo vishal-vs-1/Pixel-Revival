@@ -1,82 +1,42 @@
-# JAR Revival
+# Pixel Revival
 
-[![Checks](https://github.com/vishal-vs-1/j2me-revival/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vishal-vs-1/j2me-revival/actions/workflows/ci.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
 
-**Play classic Java ME phone games on Windows, with locally enhanced artwork and a desktop-sized view.**
+**Play Java ME phone games and NES cartridges on Windows, with optional local artwork enhancement.**
 
-JAR Revival imports your own J2ME games into a persistent library. It runs them with [FreeJ2ME-Plus](https://github.com/TASEmulators/freej2me-plus), prepares supported images with a local pixel scaler or optional Real-ESRGAN AI, and presents the game at desktop height while keeping its original proportions and logic.
+Import your own `.jar` or `.nes` files, switch between the two libraries, and compare original artwork with cached enhancements. Pixel Revival uses [FreeJ2ME-Plus](https://github.com/TASEmulators/freej2me-plus) for Java ME and a pinned [MesenCE](https://github.com/nesdev-org/MesenCE) build for NES. The Windows launcher appears as **JAR Revival**.
 
 <p align="center">
-  <img src="docs/images/revival-demo-gameplay.png" alt="Gameplay from the included synthetic Revival Demo" width="360">
-  <br><em>Included synthetic demo; no game JAR is bundled.</em>
+  <img src="docs/images/revival-demo-gameplay.png" alt="Gameplay from the included synthetic Java ME demo" width="360">
+  <br><em>The included synthetic Java ME demo.</em>
 </p>
 
-## Real-game artwork: Mr Bean Racer 2
+## Play on Windows
 
-This is the same 176 × 220 title image from a local MrBeanRacer2 import, shown at 4× (704 × 880). The original uses nearest-neighbor enlargement; the other panels are the saved Fast Pixel and Real-ESRGAN AI Cartoon outputs from this project. This is extracted title artwork, not a gameplay frame.
+1. Extract the entire Windows preview ZIP and open **JAR Revival.exe**. Keep the `app/` and `data/` folders next to it. The preview includes the Java runtime and synthetic demo. The managed NES player is a separate setup.
+2. Use the **Java ME / NES** switch in the sidebar. In Java ME mode, choose **Import Java ME demo** or **Add game**. In NES mode, add a `.nes` file after [setting up the managed runtime](docs/DEVELOPMENT.md#managed-nes-runtime).
+3. Choose **Play enhanced** to use prepared artwork. Use **Compare original** in Java ME or **Play original** in NES to see the game's original artwork.
+4. Open **Settings** to edit up to three keyboard profiles per system. Pick a saved profile or **Default** on each game's **Play** tab.
 
-<table>
-  <thead>
-    <tr>
-      <th>Original · nearest-neighbor 4×</th>
-      <th>Fast Pixel · 4×</th>
-      <th>AI Cartoon · 4×</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/mrbean-racer-2-original-nearest-4x.png" alt="Mr Bean Racer 2 title image enlarged 4× with nearest-neighbor sampling" width="220"></td>
-      <td><img src="docs/images/mrbean-racer-2-fast-pixel-4x.png" alt="Same Mr Bean Racer 2 image enlarged 4× with Fast Pixel" width="220"></td>
-      <td><img src="docs/images/mrbean-racer-2-ai-cartoon-4x.png" alt="Same Mr Bean Racer 2 image enlarged 4× with Real-ESRGAN AI Cartoon" width="220"></td>
-    </tr>
-  </tbody>
-</table>
+Saves, settings and cached artwork live in `data/` in the portable app. Keep that folder when upgrading. Bring your own games. The package includes a synthetic demo.
 
-<p><em>The MrBeanRacer2 JAR is not bundled; this comparison includes its title artwork. AI redraws the face and lettering, so the larger image is not a fully faithful restoration.</em></p>
+## Artwork and display
 
-## Bounce Tales artwork
+| Option | What it does |
+| --- | --- |
+| **Original** | Plays with the game's original artwork. NES Original uses the stock Mesen presenter. |
+| **Fast Pixel** | Uses Scale2x for sharper, smoother edges with the original colors. It works offline. |
+| **AI Cartoon** | Uses optional local Real-ESRGAN to redraw supported artwork. It can change lettering and fine details. |
 
-This is the same 168 × 121 logo image from a local Bounce Tales import, shown at 4× (672 × 484). The first panel enlarges the original with nearest-neighbor sampling; the others show Fast Pixel and the locally generated Real-ESRGAN AI Cartoon output.
+Choose a style in **Artwork** and click **Prepare** to change it for an imported game. Use **AI setup** to install the optional Vulkan runtime and model. The download happens once and inference runs locally. See the [artwork comparisons](docs/ARTWORK.md) for examples of how the two styles differ.
 
-<table>
-  <thead>
-    <tr>
-      <th>Original · nearest-neighbor 4×</th>
-      <th>Fast Pixel · 4×</th>
-      <th>AI Cartoon · 4×</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/bounce-tales-original-nearest-4x.png" alt="Bounce Tales logo enlarged 4× with nearest-neighbor sampling" width="220"></td>
-      <td><img src="docs/images/bounce-tales-fast-pixel-4x.png" alt="Bounce Tales logo enlarged 4× with Fast Pixel" width="220"></td>
-      <td><img src="docs/images/bounce-tales-ai-cartoon-4x.png" alt="Bounce Tales logo enlarged 4× with Real-ESRGAN AI Cartoon" width="220"></td>
-    </tr>
-  </tbody>
-</table>
+Java ME prepares supported resources on import and can discover additional artwork during play. NES Enhanced records tiles as you play and prepares replacements after the game closes. Reopen the game to use the ready pack. Newly encountered tiles can use the original artwork until replacements are ready. Visual results and compatibility vary by game.
 
-<p><em>The Bounce Tales JAR is not bundled; the images show one extracted logo resource, not gameplay. AI visibly redraws the ball and lettering, so inspect details before choosing this style for a game.</em></p>
+Java ME GPU playback requests the shared renderer by default. **GPUs** offers Legacy GPU, and **Compatibility** offers per-game CPU playback. NES Enhanced uses the same shared graphics implementation through the managed NES runtime.
 
-## What you can do
+## Run from source
 
-- Import JARs and keep a searchable local library with saved artwork and game data.
-- Prepare supported 2D artwork with **Fast Pixel** or optional local **AI Cartoon**. Results are cached and reused.
-- Play in a desktop-sized, aspect-preserving window with keyboard controls and a CPU compatibility option.
-- Compare enhanced presentation with the original and keep the source JAR unchanged.
-- Run enhancement locally; game files and artwork are not uploaded.
-
-## Custom keyboard profiles
-
-Open **Settings** in the left sidebar to create or edit up to three shared keyboard profiles. In a game's **Play** tab, choose **Default** or a saved profile from **Control profile**. Several games can share a profile, while each game remembers its own choice; edits apply the next time those games launch.
-
-Use the key picker or **Capture** buttons to set movement, fire, softkeys and keypad actions. Movement, fire and softkeys must stay assigned; number keys, star and hash may be unbound. Changes take effect the next time the game starts. **Default** keeps the renderer's existing keyboard controls. GPU **Esc** and **F11**, and CPU **+/-** and **Ctrl+Alt+F/R** emulator shortcuts remain reserved.
-
-## Try it on Windows
-
-For the portable Windows ZIP, extract the entire folder and open **JAR Revival.exe**. **README.txt** sits beside the app and gives the demo, AI setup, and upgrade steps. Support files are in `app/`; saves, settings, artwork, and downloaded AI are in `data/`.
-
-To run from source, you need Windows 10 or 11, Python 3.10+ with Tkinter, a JDK 17+ with `javac` and `jlink`, and Git. The first build downloads the pinned emulator source and graphics libraries.
+Use Windows 10 or 11, Python 3.12+ with Tkinter, a JDK 17+ with `javac` and `jlink`, and Git.
 
 ~~~powershell
 py -m venv .venv
@@ -85,39 +45,8 @@ py -m venv .venv
 .\.venv\Scripts\python.exe app.py
 ~~~
 
-After launching, click **Import demo** in the sidebar to add the included synthetic game to your library; it does not appear there automatically. To use your own game, click **Add game** and choose a JAR you have the right to use. The demo exercises the player without bundling a commercial title and is not evidence of broad compatibility.
-
-### Optional AI Cartoon
-
-**Fast Pixel** works immediately and offline. AI Cartoon's runtime and model are not included in the portable ZIP. The first AI setup needs an internet connection and downloads the free Real-ESRGAN runtime and model into `data/tools/ai` in the portable app, or `tools/ai` in a source checkout. Game files and artwork stay local.
-
-- In the portable Windows app, open the **Artwork** tab, click **AI setup**, and wait for the status to say that local AI is installed.
-- In a source checkout, run `tools/setup_ai.py` after building the player.
-- Then choose **AI cartoon** in the Artwork style selector. For a game already in your library, select it and click **Prepare**. For a new game, choose the style before clicking **Add game** or **Import demo**.
-
-AI Cartoon requires a working Vulkan-capable graphics driver. Fast Pixel does not.
-
-1. Choose an artwork style and select or import a game.
-2. Wait for its import or preparation to finish, then choose **Play enhanced**. Controls appear in the player window.
-
-## What to expect
-
-This is an experimental project. Standard images and some recognized containers can be prepared before play. Some games store graphics in private formats, so only part of their artwork may be enhanced. Runtime discovery can find some additional stable images, but it does not promise full-game coverage.
-
-AI enhancement can change small details, text, faces, or logos. Animation timing and game logic remain original; this project does not interpolate frames or remaster 3D models. A successful import means a game can launch, not that every level, control, or drawing path has been verified.
-
-Only import games you are allowed to use. A JAR contains executable Java code; the emulator is not a security sandbox.
-
-## For contributors
-
-- After building the player, create the portable ZIP with `python tools/package_windows.py` (requires PyInstaller 6.22.3). The ZIP and checksum are written to `build/windows-release/`.
-- [Project flow and component responsibilities](docs/PROJECT_FLOW.md)
-- [Asset decoding and runtime discovery](docs/ASSET_DECODING.md)
-- [Development setup and verification](docs/DEVELOPMENT.md)
-- [Performance measurements and limits](docs/PERFORMANCE.md)
-
-The Python contract suite runs on Windows for pushes and pull requests. Focused emulator and graphics checks are described in the development guide; some require a built player, a graphics driver, or a user-provided game.
+Follow the [development guide](docs/DEVELOPMENT.md) to build the shared native graphics runtime, set up NES, run checks, or create the portable ZIP. [Project flow](docs/PROJECT_FLOW.md) describes the two emulators and shared pipeline. See also [asset discovery](docs/ASSET_DECODING.md), [performance notes](docs/PERFORMANCE.md), and the [CI workflow](.github/workflows/ci.yml).
 
 ## License
 
-JAR Revival is GPL-3.0-or-later. FreeJ2ME-Plus, downloaded libraries, the optional model, and the Java runtime have their own notices and terms. Review upstream terms before redistributing a packaged build. User-imported game JARs are not included.
+The project is GPL-3.0-or-later. FreeJ2ME-Plus, MesenCE, the optional AI model, and bundled dependencies have their own notices and terms. Import only games you are allowed to use. Java ME JARs contain executable code and should come from a source you trust.

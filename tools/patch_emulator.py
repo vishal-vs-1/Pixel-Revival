@@ -5,6 +5,19 @@ import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'vendor/freej2me-plus/src/org/recompile'
+COMMON_GRAPHICS_JAVA = ('GraphicsPacketWriter.java', 'NativeGraphics.java')
+
+
+def copy_common_graphics_java(vendor_source, java_source=None):
+    """Copy only production JNI classes while preserving their Java package path."""
+    java_source = java_source or ROOT / 'native-graphics/jni/java/org/revival/graphics'
+    package_target = Path(vendor_source) / 'org/revival/graphics'
+    package_target.mkdir(parents=True, exist_ok=True)
+    for filename in COMMON_GRAPHICS_JAVA:
+        source = Path(java_source) / filename
+        if not source.is_file():
+            raise FileNotFoundError('Missing common graphics Java source: ' + str(source))
+        shutil.copy2(source, package_target / filename)
 
 
 def normalize_generated_hooks(text):
@@ -542,6 +555,7 @@ def patch():
     frontend.write_text(text, encoding='utf-8')
     for addition in (ROOT/'emulator-src').glob('*.java'):
         shutil.copy2(addition,SOURCE/'mobile'/addition.name)
+    copy_common_graphics_java(ROOT/'vendor/freej2me-plus/src')
     for obsolete in ('DecodedAssetCapture.java', 'PackedAssetProbe.java', 'MibSpriteDecoder.java'):
         stale = SOURCE / 'mobile' / obsolete
         if stale.exists(): stale.unlink()

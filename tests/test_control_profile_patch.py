@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.patch_emulator import patch_control_profile_frontend
+from tools.patch_emulator import copy_common_graphics_java, patch_control_profile_frontend
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,3 +29,19 @@ def test_pinned_cpu_frontend_patch_is_focused_and_idempotent():
 def test_cpu_frontend_patch_fails_clearly_when_upstream_anchor_changes():
     with pytest.raises(RuntimeError, match="expected one default press dispatcher anchor"):
         patch_control_profile_frontend("public class ChangedUpstream {}")
+
+
+def test_common_graphics_java_sources_keep_their_package_and_exclude_fixtures(tmp_path):
+    source = tmp_path / "java" / "org" / "revival" / "graphics"
+    source.mkdir(parents=True)
+    (source / "GraphicsPacketWriter.java").write_text("package org.revival.graphics;", encoding="utf-8")
+    (source / "NativeGraphics.java").write_text("package org.revival.graphics;", encoding="utf-8")
+    (source / "NativeGraphicsProbe.java").write_text("test only", encoding="utf-8")
+
+    vendor_source = tmp_path / "vendor" / "src"
+    copy_common_graphics_java(vendor_source, source)
+
+    target = vendor_source / "org" / "revival" / "graphics"
+    assert (target / "GraphicsPacketWriter.java").read_text(encoding="utf-8").startswith("package")
+    assert (target / "NativeGraphics.java").read_text(encoding="utf-8").startswith("package")
+    assert not (target / "NativeGraphicsProbe.java").exists()

@@ -38,3 +38,49 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path build -Force | Out-Null
           python -m pytest tests -q
+
+  windows-native:
+    name: Windows native runtime build
+    runs-on: windows-latest
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v4
+
+      - name: Check out pinned MesenCE source
+        uses: actions/checkout@v4
+        with:
+          repository: nesdev-org/MesenCE
+          ref: 4b8a196e299b3de297b204fd1208d2981562c89b
+          path: vendor/mesen-ce
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Set up JDK headers
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install native-job test dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Build and validate shared graphics package
+        shell: pwsh
+        run: python tools/build_graphics.py --generator 'Visual Studio 17 2022'
+
+      - name: Build pinned Mesen runtime and bridge contracts
+        shell: pwsh
+        run: python tools/build_nes.py --source-root vendor/mesen-ce --scratch-root build/mesen-u22 --runtime-root build/common-runtime-u22 --graphics-build-dir build/native-graphics-u22
+
+      - name: Run focused package and runtime checks
+        shell: pwsh
+        run: python -m pytest -q tests/test_runtime_package.py tests/test_nes_runtime.py tests/test_nes_bridge.py

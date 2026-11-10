@@ -6,6 +6,7 @@ Run on Windows: python tools/package_windows.py
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -16,6 +17,8 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if __name__ == '__main__':
+    sys.path.insert(0, str(ROOT))
 WORK = ROOT / '.runtime' / 'windows-package'
 DIST = WORK / 'dist'
 APP = DIST / 'JAR Revival'
@@ -85,6 +88,7 @@ def add_assets():
     copy(ROOT / 'build/jme-player.jar', CONTENTS / 'build/jme-player.jar')
     copy(ROOT / 'tools/runtime', CONTENTS / 'tools/runtime')
     copy(ROOT / 'tools/gpu', CONTENTS / 'tools/gpu')
+    add_common_graphics_runtime()
     copy(ROOT / 'fixtures/RevivalDemo.jar', CONTENTS / 'fixtures/RevivalDemo.jar')
     copy(ROOT / 'compatibility-src', CONTENTS / 'compatibility-src')
     copy(ROOT / 'LICENSE', CONTENTS / 'LICENSE')
@@ -107,6 +111,41 @@ def add_assets():
             raise RuntimeError(f'No {label} license files were found.')
 
 
+def add_common_graphics_runtime():
+    """Bundle one verified common renderer without shipping Mesen or game data."""
+    from graphics.jme_runtime import JmeGraphicsRuntimeLocator
+    from graphics.runtime_package import validate_runtime_tree
+
+    preferred = ROOT / 'build' / 'common-runtime-u23-resize' / 'jme' / 'graphics-runtime.json'
+    locator = JmeGraphicsRuntimeLocator(
+        ROOT, packaged=False, environment={}, preferred_manifest=preferred)
+    runtime = locator.locate()
+    if runtime is None:
+        raise RuntimeError('A verified shared graphics runtime is required for the portable app.')
+
+    destination = CONTENTS / 'tools' / 'common-runtime'
+    copy(runtime.root / 'common', destination / 'common')
+    for system in ('jme', 'nes'):
+        copy(runtime.root / system / 'graphics-runtime.json',
+             destination / system / 'graphics-runtime.json')
+    copy(runtime.root / 'source' / 'native-graphics-source.zip',
+         destination / 'source' / 'native-graphics-source.zip')
+    copy(ROOT / 'LICENSE', destination / 'LICENSE')
+    readme = runtime.root / 'README.txt'
+    if readme.is_file():
+        copy(readme, destination / 'README.txt')
+    else:
+        (destination / 'README.txt').write_text(
+            'JAR Revival common graphics runtime (Windows x64).\n'
+            'JME and NES manifests reference the same verified renderer DLL.\n'
+            'See common/BUILDING.md and common/dependencies.json for build details.\n',
+            encoding='utf-8')
+
+    identity = validate_runtime_tree(destination)
+    if identity['dll_sha256'] != runtime.build_id:
+        raise RuntimeError('Packaged graphics DLL differs from the verified source runtime.')
+
+
 def verify_archive(archive):
     with zipfile.ZipFile(archive) as zf:
         if zf.testzip():
@@ -119,12 +158,32 @@ def verify_archive(archive):
             'JAR Revival/app/fixtures/RevivalDemo.jar',
             'JAR Revival/app/tools/runtime/bin/java.exe',
             'JAR Revival/app/tools/gpu/lwjgl-3.3.6.jar',
+            'JAR Revival/app/tools/common-runtime/common/revival_graphics.dll',
+            'JAR Revival/app/tools/common-runtime/common/revival_graphics_jni.dll',
+            'JAR Revival/app/tools/common-runtime/jme/graphics-runtime.json',
+            'JAR Revival/app/tools/common-runtime/nes/graphics-runtime.json',
+            'JAR Revival/app/tools/common-runtime/source/native-graphics-source.zip',
             'JAR Revival/app/LICENSE',
             'JAR Revival/app/THIRD-PARTY-LICENSES/Python-LICENSE.txt',
         }
         missing = required - names
         if missing:
             raise RuntimeError('Missing package files: ' + ', '.join(sorted(missing)))
+        runtime_prefix = 'JAR Revival/app/tools/common-runtime/'
+        core = zf.read(runtime_prefix + 'common/revival_graphics.dll')
+        shim = zf.read(runtime_prefix + 'common/revival_graphics_jni.dll')
+        runtime_hashes = json.loads(zf.read(runtime_prefix + 'common/runtime-hashes.json'))
+        expected_files = runtime_hashes.get('files', {})
+        core_hash = hashlib.sha256(core).hexdigest()
+        shim_hash = hashlib.sha256(shim).hexdigest()
+        if expected_files != {
+                'common/revival_graphics.dll': core_hash,
+                'common/revival_graphics_jni.dll': shim_hash}:
+            raise RuntimeError('Packaged graphics DLL hashes do not match the runtime manifest.')
+        for system in ('jme', 'nes'):
+            manifest = json.loads(zf.read(runtime_prefix + f'{system}/graphics-runtime.json'))
+            if manifest.get('build_id') != core_hash or manifest.get('dll') != '../common/revival_graphics.dll':
+                raise RuntimeError(f'Packaged {system} manifest does not identify the common renderer.')
         top = {name.split('/')[1] for name in names if len(name.split('/')) > 1}
         if top != {'JAR Revival.exe', 'README.txt', 'app', 'data'}:
             raise RuntimeError(f'Unexpected top-level package files: {top}')
@@ -138,7 +197,9 @@ def verify_archive(archive):
             ):
                 raise RuntimeError(f'Unexpected game archive: {name}')
         readme = zf.read('JAR Revival/README.txt').decode('utf-8')
-        for instruction in ['JAR Revival.exe', 'Import demo', 'Artwork tab', 'AI setup', 'Prepare', 'data\\tools\\ai']:
+        for instruction in ['JAR Revival.exe', 'Import Java ME demo', 'Settings', 'Shared GPU',
+                            'Legacy GPU', 'CPU · compatibility', 'Artwork tab', 'AI setup',
+                            'Prepare', 'data\\tools\\ai']:
             if instruction not in readme:
                 raise RuntimeError(f'Missing user instruction: {instruction}')
 

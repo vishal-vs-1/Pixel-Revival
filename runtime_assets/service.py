@@ -18,6 +18,7 @@ from PIL import Image
 
 from runtime_assets.contracts import Recipe, SourceRecord, image_source_id
 from runtime_assets.ingest import LegacyCacheImporter, MigrationReport
+from runtime_assets.integration import WorkspaceIntegration
 from runtime_assets.store import AssetStore, JobLease, JobRecord
 from runtime_assets.resources import ResourcePressure
 
@@ -27,6 +28,7 @@ class _Game:
     workspace: Path
     store: AssetStore
     recipe: Recipe
+    integration: WorkspaceIntegration | None = None
     paused: bool = False
     generation: int = 0
     dirty_at: float | None = None
@@ -135,33 +137,48 @@ class AssetService:
 
     def register_game(self, workspace: Path, recipe: Recipe, *, game: dict,
                       ai_recipe: Recipe | None = None, queue_missing: bool = True,
-                      paused: bool = False) -> MigrationReport:
+                      paused: bool = False,
+                      integration: WorkspaceIntegration | None = None) -> MigrationReport:
         """Register a game and its static sources without waiting for enhancement."""
         with self._coordinator_gate:
             return self._register_game(workspace,recipe,game=game,ai_recipe=ai_recipe,
-                                       queue_missing=queue_missing,paused=paused)
+                                       queue_missing=queue_missing,paused=paused,integration=integration)
 
-    def _register_game(self,workspace,recipe,*,game,ai_recipe,queue_missing,paused):
+    def _register_game(self,workspace,recipe,*,game,ai_recipe,queue_missing,paused,integration):
         root = Path(workspace).resolve()
         if game.get("id") != root.name:
             raise ValueError("Game metadata ID does not match its workspace")
-        store = AssetStore(root)
-        report = LegacyCacheImporter(root, store).import_workspace(
-            game, recipe, ai_recipe=ai_recipe, queue_missing=queue_missing)
         with self._lock:
+            if self._closed:
+                raise RuntimeError("AssetService is closed")
             current = self._games.get(root.name)
+            if current is not None and (current.workspace != root or current.removing):
+                raise ValueError("Workspace does not match an active registration for this game")
+        store = AssetStore(root)
+        if integration is None:
+            report = LegacyCacheImporter(root, store).import_workspace(
+                game, recipe, ai_recipe=ai_recipe, queue_missing=queue_missing)
+        else:
+            store.register_recipe(recipe)
+            report = integration.admit(root, store, game, recipe, queue_missing)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("AssetService is closed")
             if current is None:
-                key, sources = self._read_compatibility_state(root, recipe.key)
-                current = _Game(root, store, recipe, paused=paused or self._paused_all,
+                key, sources = (self._read_compatibility_state(root, recipe.key)
+                                if integration is None else ("", None))
+                current = _Game(root, store, recipe, integration=integration, paused=paused or self._paused_all,
                                 compat_recipe_key=key, compat_sources=sources)
                 self._games[root.name] = current
             else:
-                if current.recipe.key != recipe.key:
+                if current.recipe.key != recipe.key or current.integration is not integration:
                     current.compat_recipe_key = ""
                     current.compat_sources = set()
                 current.store = store
                 current.recipe = recipe
-                current.paused = paused or self._paused_all
+                current.integration = integration
+                current.paused = (paused or self._paused_all or
+                                  (current.player_active and not current.live_enabled))
             current.dirty_at = time.monotonic() + 0.5
             current.next_scan = time.monotonic() + 5.0
             current.compat_pending = True
@@ -172,7 +189,13 @@ class AssetService:
     def register_imported_sources(self, workspace: Path,
                                   sources: Iterable[SourceRecord]) -> int:
         """Validate and queue a batch of imported sources under the selected recipe."""
+        with self._coordinator_gate:
+            return self._register_imported_sources(workspace, sources)
+
+    def _register_imported_sources(self, workspace, sources):
         game = self._game_for(workspace)
+        if game.removing:
+            raise RuntimeError("This artwork workspace is being removed")
         added = 0
         for source in sources:
             if not isinstance(source, SourceRecord):
@@ -188,7 +211,14 @@ class AssetService:
         return added
 
     def select_recipe(self, game_id: str, recipe: Recipe):
+        # Recipe switches and removal serialize with the workspace publication hooks.
+        with self._coordinator_gate:
+            return self._select_recipe(game_id, recipe)
+
+    def _select_recipe(self, game_id, recipe):
         game = self._game(game_id)
+        if game.removing:
+            raise RuntimeError("This artwork workspace is being removed")
         game.store.register_recipe(recipe)
         with self._lock:
             if game.recipe.key != recipe.key:
@@ -226,9 +256,10 @@ class AssetService:
         with self._lock:
             self._paused_all = False
             for game in self._games.values():
-                game.paused = not game.live_enabled
-                if not game.paused:
+                paused = game.player_active and not game.live_enabled
+                if game.paused and not paused:
                     game.compat_pending = True
+                game.paused = paused
 
     def set_player_state(self, game_id: str, running: bool, metrics_path: Path | None = None,
                          *, allow_live: bool = True):
@@ -294,7 +325,18 @@ class AssetService:
         """Import newly published source PNGs and process a bounded event batch."""
         with self._coordinator_gate:
             game = self._game(game_id)
+            if game.removing:
+                return 0
+            if game.integration is not None:
+                return self._discover_integrated(game)
             return self._reconcile_sources(game) + self._ingest_events(game, 32)
+
+    def _discover_integrated(self, game: _Game) -> int:
+        accepted = game.integration.discover(game.workspace, game.store, game.recipe)
+        if accepted:
+            game.dirty_at = time.monotonic() + 0.5
+            self._notify(game.workspace.name)
+        return accepted
 
     def unregister_game(self,game_id: str,*,timeout: float=60.0) -> bool:
         """Quiesce one game's writes before its files are removed; other games stay registered."""
@@ -429,11 +471,16 @@ class AssetService:
             if game.removing:continue
             try:
                 game.store.recover_expired()
-                if now >= game.next_scan:
-                    self._reconcile_sources(game)
-                    game.next_scan = now + 5.0
-                if self._ingest_events(game, 32):
-                    game.dirty_at = now + 0.5
+                if game.integration is not None:
+                    if now >= game.next_scan:
+                        game.next_scan = now + 0.5
+                        self._discover_integrated(game)
+                else:
+                    if now >= game.next_scan:
+                        self._reconcile_sources(game)
+                        game.next_scan = now + 5.0
+                    if self._ingest_events(game, 32):
+                        game.dirty_at = now + 0.5
             except Exception:
                 continue
         try:
@@ -445,13 +492,19 @@ class AssetService:
             pass
         for game in games:
             if game.removing:continue
-            if game.dirty_at is not None and now >= game.dirty_at:
+            # Integrated formats may collect live input while running, but building
+            # a replacement package is deferred until the player has closed.
+            defer_integrated_publish = game.integration is not None and game.player_active
+            if game.dirty_at is not None and now >= game.dirty_at and not defer_integrated_publish:
                 try:
-                    self._publish_ready(game)
+                    if game.integration is None:
+                        self._publish_ready(game)
+                    else:
+                        game.integration.publish_ready(game.workspace, game.store, game.recipe)
                     game.dirty_at = None
                 except Exception:
                     game.dirty_at = time.monotonic() + 1.0
-            if game.compat_pending and not game.paused:
+            if game.integration is None and game.compat_pending and not game.paused:
                 try:
                     self._publish_compatibility(game, limit=16)
                 except Exception:

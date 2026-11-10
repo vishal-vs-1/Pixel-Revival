@@ -1,11 +1,13 @@
 """Small reusable Tk containers; scrolling is independent of library/game logic."""
 import tkinter as tk
 from tkinter import ttk
+from ui_palette import java_color
 
 
 class HoverLabel:
-    def __init__(self,widget,text):
+    def __init__(self,widget,text,color=java_color):
         self.widget,self.text=widget,text
+        self.color=color
         self.pending=None;self.window=None
         widget.bind('<Enter>',self.schedule,add='+')
         for event in ('<Leave>','<ButtonPress>','<Destroy>'):
@@ -18,7 +20,7 @@ class HoverLabel:
         self.pending=None
         if not self.widget.winfo_exists():return
         self.window=tk.Toplevel(self.widget);self.window.overrideredirect(True)
-        label=tk.Label(self.window,text=self.text,bg='#263649',fg='#eff5fc',
+        label=tk.Label(self.window,text=self.text,bg=self.color('#263649'),fg=self.color('#eff5fc'),
                        font=('Segoe UI',9),padx=8,pady=5,relief='solid',borderwidth=1)
         label.pack();self.window.update_idletasks()
         x=min(self.widget.winfo_rootx(),self.widget.winfo_screenwidth()-self.window.winfo_reqwidth()-8)
@@ -39,6 +41,7 @@ class LibraryRowActions:
         self.tree,self.scrollbar=tree,scrollbar
         self.callbacks=(on_play,on_delete)
         self.buttons={};self.enabled=True;self.pending=None
+        self.color=java_color
         self.icons=[self._icon('play','#102720'),self._icon('delete','#ffb6b6')]
         tree.configure(yscrollcommand=self._scrolled)
         tree.bind('<Configure>',self.schedule,add='+')
@@ -75,6 +78,24 @@ class LibraryRowActions:
     def set_enabled(self,enabled):
         if self.enabled!=enabled:self.enabled=enabled;self.schedule()
 
+    def set_palette(self,color):
+        if self.color is color:
+            return
+        self.color=color
+        self.icons=[self._icon('play',color('#102720')),self._icon('delete',color('#ffb6b6'))]
+        for pair in self.buttons.values():
+            for index,button in enumerate(pair):
+                self._color_button(button,index)
+
+    def _color_button(self,button,index):
+        play=index==0
+        color=self.color
+        button.configure(image=self.icons[index],
+                         bg=color('#84e4c7' if play else '#192636'),
+                         fg=color('#102720' if play else '#ffb6b6'),
+                         activebackground=color('#a8f5df' if play else '#354b60'),
+                         activeforeground=color('#102720' if play else '#ffd0d0'))
+
     def schedule(self,event=None):
         if self.pending is None:self.pending=self.tree.after_idle(self.refresh)
 
@@ -85,8 +106,12 @@ class LibraryRowActions:
     def refresh(self):
         self.pending=None
         action_width=84
-        self.tree.column('actions',width=action_width,minwidth=action_width,stretch=False)
-        self.tree.column('#0',width=max(1,self.tree.winfo_width()-action_width-4),minwidth=1,stretch=False)
+        name_width=max(1,self.tree.winfo_width()-action_width-4)
+        # Writing unchanged widths can trigger another scroll/layout notification.
+        if self.tree.column('actions','width')!=action_width:
+            self.tree.column('actions',width=action_width)
+        if self.tree.column('#0','width')!=name_width:
+            self.tree.column('#0',width=name_width)
         visible={self.tree.identify_row(y) for y in range(0,self.tree.winfo_height(),10)}-{''}
         for identity in set(self.buttons)-visible:
             for button in self.buttons.pop(identity):button.destroy()
@@ -94,14 +119,13 @@ class LibraryRowActions:
             if identity not in self.buttons:
                 pair=[]
                 for index,text in enumerate(('Play','Delete')):
-                    button=tk.Button(self.tree,image=self.icons[index],text='',
-                        bg='#84e4c7' if index==0 else '#192636',fg='#102720' if index==0 else '#ffb6b6',
-                        activebackground='#a8f5df' if index==0 else '#354b60',
-                        activeforeground='#102720' if index==0 else '#ffd0d0',
+                    button=tk.Button(self.tree,text='',
                         relief='flat',borderwidth=0,highlightthickness=0,padx=0,pady=0,cursor='hand2',
                         command=lambda key=identity,action=index:self.callbacks[action](key))
+                    self._color_button(button,index)
                     button.bind('<MouseWheel>',self._wheel);pair.append(button)
-                    button.hover_label=HoverLabel(button,text+' '+self.tree.item(identity,'text'))
+                    button.hover_label=HoverLabel(button,text+' '+self.tree.item(identity,'text'),
+                                                  lambda swatch:self.color(swatch))
                 self.buttons[identity]=pair
             for index,button in enumerate(self.buttons[identity]):
                 bounds=self.tree.bbox(identity,'actions')
@@ -117,6 +141,7 @@ class TabNavigation(tk.Frame):
     def __init__(self,parent,notebook,*,bg):
         super().__init__(parent,bg=bg)
         self.notebook=notebook
+        self.color=java_color
         self.buttons=[]
         for index,tab in enumerate(notebook.tabs()):
             self.columnconfigure(index,weight=1,uniform='tabs')
@@ -135,14 +160,20 @@ class TabNavigation(tk.Frame):
         self.notebook.select(index);self.buttons[index].focus_set()
         return 'break'
 
+    def set_palette(self,color):
+        self.color=color
+        self.update_selection()
+
     def update_selection(self,event=None):
         selected=self.notebook.index('current')
         for index,button in enumerate(self.buttons):
             active=index==selected
-            button.configure(bg='#84e4c7' if active else '#192636',
-                fg='#102720' if active else '#9db7cc',
-                activebackground='#a8f5df' if active else '#263649',
-                activeforeground='#102720' if active else '#eff5fc')
+            color=self.color
+            button.configure(bg=color('#84e4c7' if active else '#192636'),
+                fg=color('#102720' if active else '#9db7cc'),
+                activebackground=color('#a8f5df' if active else '#263649'),
+                activeforeground=color('#102720' if active else '#eff5fc'),
+                highlightbackground=self.cget('bg'),highlightcolor=color('#84e4c7'))
 
 
 class ScrollableFrame(tk.Frame):

@@ -13,8 +13,8 @@ def main():
     gpu = ROOT / "tools" / "gpu"
     classpath = str(classes) + ";" + str(gpu / "*")
     checks = [
-        ROOT / "tests" / "ControlProfileBindingsCheck.java",
-        ROOT / "tests" / "AwtControlProfileInputCheck.java",
+        ROOT / "tests" / "java" / "ControlProfileBindingsCheck.java",
+        ROOT / "tests" / "java" / "AwtControlProfileInputCheck.java",
     ]
     subprocess.run([
         locate_java("javac"), "--release", "8", "-encoding", "UTF-8",

@@ -5,6 +5,7 @@ from unittest.mock import Mock
 import control_profile_dialog as dialog_module
 from control_profile_dialog import ControlProfileDialog
 from control_profiles import ACTION_ORDER, CUSTOM_SLOT_IDS, create_profile, default_seed
+from control_schema import JME_CONTROL_SCHEMA
 
 
 class Value:
@@ -30,6 +31,7 @@ def dialog_draft(*, problem=None, save_error=None):
     dialog = ControlProfileDialog.__new__(ControlProfileDialog)
     dialog.result = SimpleNamespace(problem=problem)
     dialog.store = SimpleNamespace(path=Path('fixture/control-profiles.json'))
+    dialog.schema = JME_CONTROL_SCHEMA
     dialog.top = object()
     if save_error is not None:
         dialog.store.save_slot = Mock(side_effect=save_error)

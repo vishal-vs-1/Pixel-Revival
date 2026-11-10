@@ -43,14 +43,25 @@ public final class GpuPlayer {
             glfwSwapInterval(1);
             GpuRenderer.device=glGetString(GL_RENDERER);
             System.out.println("GPU compositor: "+GpuRenderer.device+" | "+glGetString(GL_VERSION));
-            System.out.println(GpuRenderer.warmupFastScaler()
-                    ? "GPU Scale2x shader ready before game startup"
-                    : "GPU Scale2x unavailable; using compatibility scaling");
+            final int logicalWidth=Integer.parseInt(args[1]),logicalHeight=Integer.parseInt(args[2]);
+            String requestedBackend=System.getProperty("jme.graphicsBackend","legacy");
+            CommonGraphicsBackend commonBackend=GpuRenderer.ENABLED
+                    ? CommonGraphicsBackend.tryCreate(logicalWidth,logicalHeight,Enhancement.SCALE,GpuRenderer.device)
+                    : null;
+            if(commonBackend!=null) {
+                GpuRenderer.selectBackend(commonBackend);
+                System.out.println("Common graphics backend selected: "+GpuRenderer.backendName());
+            } else {
+                if("common-v1".equals(requestedBackend))
+                    System.err.println("Graphics backend fallback: requested=common-v1 actual=legacy-java; see the preceding common-graphics diagnostic.");
+                System.out.println(GpuRenderer.warmupFastScaler()
+                        ? "GPU Scale2x shader ready before game startup"
+                        : "GPU Scale2x unavailable; using compatibility scaling");
+            }
             String expectedGpu=System.getProperty("jme.expectedGpu","");
             boolean gpuMatched=expectedGpu.isEmpty()||gpuName(GpuRenderer.device).contains(gpuName(expectedGpu));
             if(!gpuMatched)System.err.println("GPU preference mismatch: requested "+expectedGpu+"; Windows/driver selected "+GpuRenderer.device);
             final long nativeWindow=window;
-            final int logicalWidth=Integer.parseInt(args[1]),logicalHeight=Integer.parseInt(args[2]);
             final String name=args.length>3?args[3]:"Java ME game";
             String controls=CONTROL_BINDINGS.isCustom()?"Custom controls":"Arrows / Enter / Q W";
             glfwSetWindowTitle(window,name+" · "+GpuRenderer.device+" · "+controls+" · F11 fullscreen · Esc close");
@@ -109,12 +120,12 @@ public final class GpuPlayer {
                     if(report!=null) {
                         String device=json(GpuRenderer.device);
                         float fit=Math.min((float)oldW/logicalWidth,(float)oldH/logicalHeight);
-                        String json="{\"renderer\":\"OpenGL GPU\",\"device\":\""+device+"\",\"preference\":\""+json(System.getProperty("jme.gpuPreference","system"))+"\",\"expected\":\""+json(expectedGpu)+"\",\"matched\":"+gpuMatched+",\"window_width\":"+oldW+",\"window_height\":"+oldH+",\"game_width\":"+Math.round(logicalWidth*fit)+",\"game_height\":"+Math.round(logicalHeight*fit)+"}";
+                        String json="{\"renderer\":\""+GpuRenderer.backendName()+"\",\"device\":\""+device+"\",\"preference\":\""+json(System.getProperty("jme.gpuPreference","system"))+"\",\"expected\":\""+json(expectedGpu)+"\",\"matched\":"+gpuMatched+",\"window_width\":"+oldW+",\"window_height\":"+oldH+",\"game_width\":"+Math.round(logicalWidth*fit)+",\"game_height\":"+Math.round(logicalHeight*fit)+"}";
                         Files.write(Paths.get(report+".gpu.json"),json.getBytes(StandardCharsets.UTF_8));
                     }
                 }
                 if(System.nanoTime()-cleaned>2000000000L){GpuRenderer.cleanup();cleaned=System.nanoTime();}
-                if(!proof&&GpuRenderer.submittedFrames>=120&&System.getProperty("jme.proof")!=null) {
+                if(!proof&&GpuRenderer.submittedFrames>=120&&System.getProperty("jme.proof")!=null&&GpuRenderer.supportsReadback()) {
                     GpuRenderer.drain();
                     ImageIO.write(GpuRenderer.readback(Mobile.getPlatform().getLcdFrontbuffer()),"PNG",new File(System.getProperty("jme.proof")));
                     System.out.println("PROOF: 120 GPU frames rendered");proof=true;
@@ -122,8 +133,10 @@ public final class GpuPlayer {
                 if(stopSeconds>0&&System.nanoTime()-start>stopSeconds*1000000000L)break;
             }
             releaseHeldKeys();
-            GpuRenderer.closing=true;
+            GpuRenderer.stopFramePublication();
             PlayerLifecycle.stop(Mobile.midlet,500);
+            if(Boolean.getBoolean("jme.backendTrace"))
+                System.out.println("BACKEND TRACE name="+GpuRenderer.backendName()+" submitted_frames="+GpuRenderer.submittedFrames);
             GpuRenderer.shutdown();GLFW.glfwSetWindowShouldClose(window,true);
             org.lwjgl.glfw.Callbacks.glfwFreeCallbacks(window);glfwDestroyWindow(window);glfwTerminate();System.exit(gameFailure==null?0:72);
         }catch(Throwable error) {

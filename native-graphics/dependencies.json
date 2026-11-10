@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "target": "windows-x64",
+  "graphics_dll": {
+    "abi_version": 1,
+    "c_standard": "C11",
+    "cxx_standard": "C++17",
+    "cmake_minimum": "3.27",
+    "compiler": "MSVC x64",
+    "external_build_libraries": [],
+    "runtime_imports": [
+      "VCRUNTIME140.dll",
+      "api-ms-win-crt-runtime-l1-1-0.dll",
+			"KERNEL32.dll",
+			"OPENGL32.dll"
+    ]
+  },
+  "jni_shim": {
+    "jdk_requirement": "JDK with include/jni.h and include/win32/jni_md.h",
+    "external_link_libraries": [],
+    "runtime_imports": [
+      "revival_graphics.dll",
+      "VCRUNTIME140.dll",
+      "api-ms-win-crt-runtime-l1-1-0.dll",
+      "KERNEL32.dll"
+    ]
+  },
+  "nes_runtime": {
+    "repository": "https://github.com/nesdev-org/MesenCE",
+    "commit": "4b8a196e299b3de297b204fd1208d2981562c89b",
+    "dotnet_sdk_major": 10
+  }
+}

@@ -27,13 +27,19 @@ public final class Performance {
         if(last!=0) {frames[fi++%frames.length]=now-last;fc=Math.min(fc+1,frames.length);}
         last=now;count++;
         if(now-window<1000000000L)return;
-        String json=String.format(Locale.US,"{\"fps\":%.2f,\"frame_p95_ms\":%.2f,\"input_queue_p95_ms\":%.2f,\"fast_scaler_submit_ms\":%.3f,\"gpu_scale_passes\":%d,\"gpu_scale_fallbacks\":%d,\"raw_rgb_gpu_draws\":%d,\"scale\":%d,\"backend\":\"%s\",\"updated\":%.3f}",
+        String requestedBackend=Boolean.getBoolean("jme.gpu")
+                ? System.getProperty("jme.graphicsBackend","legacy") : "cpu";
+        // Metrics contains fixed backend tokens so they remain valid JSON.
+        if(!"common-v1".equals(requestedBackend)&&!"legacy".equals(requestedBackend)&&!"cpu".equals(requestedBackend))
+            requestedBackend="unknown";
+        String json=String.format(Locale.US,"{\"fps\":%.2f,\"frame_p95_ms\":%.2f,\"input_queue_p95_ms\":%.2f,\"fast_scaler_submit_ms\":%.3f,\"gpu_scale_passes\":%d,\"gpu_scale_fallbacks\":%d,\"raw_rgb_gpu_draws\":%d,\"scale\":%d,\"requested_backend\":\"%s\",\"backend\":\"%s\",\"updated\":%.3f}",
             count*1e9/(now-window),percentile(frames,fc),percentile(inputs,ic),
             Boolean.getBoolean("jme.gpu")?GpuRenderer.fastScalerSubmitNanos()/1e6:0.0,
             Boolean.getBoolean("jme.gpu")?GpuRenderer.fastScalerPasses():0L,
             Boolean.getBoolean("jme.gpu")?GpuRenderer.fastScalerFallbacks():0L,
             RawRgbPresentation.submittedDraws(),
-            Enhancement.SCALE,Boolean.getBoolean("jme.gpu")?"OpenGL GPU":"Java2D CPU",System.currentTimeMillis()/1000.0);
+            Enhancement.SCALE,requestedBackend,
+            Boolean.getBoolean("jme.gpu")?GpuRenderer.backendName():"Java2D CPU",System.currentTimeMillis()/1000.0);
         window=now;count=0;
         WRITER.execute(() -> {try {
             Path destination=Paths.get(PATH), temp=Paths.get(PATH+".tmp");

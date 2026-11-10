@@ -21,6 +21,9 @@ original-assets/
 # Local game files and private work history.
 /gamesss/
 /local-work/
+/tools/nes-runtime/
+/tools/common-runtime/
+/rms/
 config/
 .runtime/
 freej2me_system/

@@ -23,6 +23,7 @@ from runtime_assets.contracts import ncnn_recipe, pixel_recipe
 from runtime_assets.service import AssetService
 from game_storage import GameStorage, validate_game_id
 from execution_policy import java_execution_arguments
+from persistence import atomic_json
 from app_paths import RESOURCE_ROOT, DATA_ROOT
 from control_profiles import (
     CUSTOM_SLOT_IDS,
@@ -52,13 +53,6 @@ def runtime_arguments(game_id, game=None):
     if isinstance(recipe_key,str) and len(recipe_key)==64:
         args.append(f'-Djme.recipeKey={recipe_key}')
     return args
-
-
-def atomic_json(path: Path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
-    temp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
-    os.replace(temp, path)
 
 
 def image_id(image: Image.Image) -> str:
@@ -111,7 +105,8 @@ def locate_java(tool='java') -> str:
 
 
 class Library:
-    def __init__(self, library=LIBRARY, rendered=RENDERED, workers=2, *, control_profiles=None):
+    def __init__(self, library=LIBRARY, rendered=RENDERED, workers=2, *, control_profiles=None,
+                 graphics_launch_policy=None):
         self.library, self.rendered = Path(library), Path(rendered)
         self.library.mkdir(parents=True, exist_ok=True)
         self.rendered.mkdir(parents=True, exist_ok=True)
@@ -122,6 +117,7 @@ class Library:
         self._deleting = set()
         self.control_profiles = control_profiles or ControlProfileStore(
             DATA_ROOT / 'config' / 'control-profiles.json', atomic_json)
+        self.graphics_launch_policy = graphics_launch_policy
         self.asset_service = AssetService(self._backend_for_recipe)
 
     def recipe_for_backend(self, backend):
@@ -151,7 +147,7 @@ class Library:
         for file in self.rendered.glob('*/game.json'):
             if file.parent.name.startswith('.') or file.parent.name in self._deleting:continue
             try:
-                game=json.loads(file.read_text(encoding='utf-8'))
+                game=self._read_java_metadata(file)
                 profile=PROFILES.get(game['id'])
                 if profile and 'width' in profile and not game.get('screen_source') and (game['width'],game['height'])==(240,320):
                     game['previous_screen']=[game['width'],game['height']]
@@ -174,6 +170,47 @@ class Library:
             except (ValueError, OSError):
                 pass
         return sorted(result, key=lambda g: g['name'].casefold())
+
+    @staticmethod
+    def _read_java_metadata(file):
+        game = json.loads(file.read_text(encoding='utf-8'))
+        if (not isinstance(game, dict) or game.get('system', 'j2me') != 'j2me'
+                or validate_game_id(game.get('id')) != file.parent.name
+                or not isinstance(game.get('name'), str)):
+            raise ValueError('Game metadata does not belong to this Java ME workspace.')
+        return game
+
+    def recover_assets(self, on_error, should_stop):
+        """Recover saved recipes behind the Java ME storage and deletion boundary."""
+        from runtime_assets.contracts import Recipe
+        from runtime_assets.store import AssetStore
+        for metadata_path in self.rendered.glob('*/game.json'):
+            try:
+                # A deletion can happen after the scan. Check again under the same lock.
+                with self.lock:
+                    if should_stop():
+                        return
+                    folder = metadata_path.parent
+                    if (folder.name.startswith('.') or folder.name in self._deleting
+                            or not metadata_path.is_file() or metadata_path.is_symlink()
+                            or folder.is_symlink() or folder.is_junction()):
+                        continue
+                    game = self._read_java_metadata(metadata_path)
+                    recipe_key = game.get('recipe_key')
+                    if not recipe_key:
+                        continue
+                    raw = AssetStore(folder).recipe_json(recipe_key)
+                    if raw is None:
+                        continue
+                    recipe = Recipe.from_json(raw)
+                    ai_recipe = recipe if recipe.algorithm == 'realesrgan-x4plus-anime' else None
+                    if should_stop():
+                        return
+                    self.asset_service.register_game(
+                        folder, recipe, game=game, ai_recipe=ai_recipe,
+                        queue_missing=False)
+            except Exception as error:
+                on_error(str(error))
 
     def workspace(self, game_id):
         return self.rendered / validate_game_id(game_id)
@@ -497,11 +534,15 @@ class Library:
         control_resolution=resolve_selection(selection,self.control_profiles.load())
         control_profile_arg=(f'-Djme.controlBindings={serialize_bindings(control_resolution.profile)}'
                              if control_resolution.profile is not None else None)
+        graphics_decision=(self.graphics_launch_policy.for_renderer(game.get('renderer','gpu'))
+                           if self.graphics_launch_policy is not None else None)
         args = [java, *java_execution_arguments(game), '-Xmx768m', '-Dfile.encoding=ISO_8859_1', f'-Djme.pack={folder}',
                 f'-Djme.stats={log_path.with_suffix(".stats.json")}',
                 f"-Djme.textures={self.texture_dir(folder,game.get('backend','pixel'))}",
                 f'-Djme.scale={1 if original else render_scale}']
         args += [f'-Djme.gpuPreference={gpu_mode}',f'-Djme.expectedGpu={expected["name"] if expected else ""}']
+        if graphics_decision is not None:
+            args.extend(graphics_decision.arguments)
         args += runtime_arguments(game['id'],game)
         if control_profile_arg is not None:
             args.append(control_profile_arg)
@@ -519,6 +560,10 @@ class Library:
         with log_path.open('w', encoding='utf-8') as log:
             log.write('Startup: '+str(playable)+'\n')
             log.write(game['startup']['note']+'\n')
+            if graphics_decision is not None:
+                log.write('Graphics backend requested: '+graphics_decision.requested_backend+'\n')
+                if graphics_decision.fallback_reason:
+                    log.write('Graphics backend fallback: '+graphics_decision.fallback_reason+'\n')
             if control_resolution.profile is not None:
                 log.write('Control profile: '+control_resolution.profile.slot_id+'\n')
             elif control_resolution.reason:
