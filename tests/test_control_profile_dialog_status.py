@@ -2,10 +2,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import control_profile_dialog as dialog_module
-from control_profile_dialog import ControlProfileDialog
-from control_profiles import ACTION_ORDER, CUSTOM_SLOT_IDS, create_profile, default_seed
-from control_schema import JME_CONTROL_SCHEMA
+from launcher import control_profile_dialog as dialog_module
+from launcher.control_profile_dialog import ControlProfileDialog
+from controls.java_me import ACTION_ORDER, CUSTOM_SLOT_IDS, create_profile, default_seed
+from controls.schema import JME_CONTROL_SCHEMA
 
 
 class Value:

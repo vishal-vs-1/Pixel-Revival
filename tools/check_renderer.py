@@ -7,7 +7,8 @@ from PIL import Image
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from engine import locate_java, image_id
+from systems.jme.jdk import locate_java
+from runtime_assets.contracts import image_source_id as image_id
 
 classes=ROOT/'build/classes'
 subprocess.run([locate_java('javac'),'--release','8','-cp',str(classes),'-d',str(classes),str(ROOT/'tests/java/RendererCheck.java')],check=True)

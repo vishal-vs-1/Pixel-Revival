@@ -70,7 +70,7 @@ class NcnnBackend:
 
     def recipe(self) -> Recipe:
         if self.model_digest is None:
-            from ai_backend import executable
+            from runtime_assets.ai import executable
             binary = executable()
             if binary is None:
                 raise RuntimeError("Install the free local AI backend before selecting its recipe")
@@ -91,7 +91,7 @@ class NcnnBackend:
         if self.model_digest is None or recipe != self.recipe():
             raise ValueError("NcnnBackend received an incompatible recipe")
         if self._upscale is None:
-            from ai_backend import upscale
+            from runtime_assets.ai import upscale
             operation = upscale
         else:
             operation = self._upscale
@@ -109,7 +109,7 @@ class NcnnBackend:
             raise ValueError("NcnnBackend received an incompatible recipe")
         if self._upscale is not None:
             return [self.enhance(source, recipe, workdir) for source in sources]
-        from ai_backend import upscale_many
+        from runtime_assets.ai import upscale_many
         budget=self.batch_limits()
         if budget.reason:
             from runtime_assets.resources import ResourcePressure

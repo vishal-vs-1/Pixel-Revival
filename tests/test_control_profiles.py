@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from control_profiles import (
+from controls.java_me import (
     ACTION_ORDER,
     CUSTOM_SLOT_IDS,
     DEFAULT_SEED,
@@ -17,7 +17,7 @@ from control_profiles import (
     resolve_selection,
     serialize_bindings,
 )
-from control_profile_dialog import keysym_to_token
+from launcher.control_profile_dialog import keysym_to_token
 
 
 def text_json_writer(path, document):

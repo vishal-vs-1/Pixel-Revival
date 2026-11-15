@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-import engine
-import gpu_policy
-from control_profiles import ControlProfileStore, default_seed, serialize_bindings
+from systems.jme import library as engine, playback
+from graphics import gpu_policy as gpu_policy
+from controls.java_me import ControlProfileStore, default_seed, serialize_bindings
 
 
 GAME_ID = "a" * 64
@@ -23,8 +23,8 @@ def test_custom_profile_is_a_single_jvm_argument_before_player_entry(tmp_path, m
     (root / "build" / "jme-player.jar").touch()
     (root / "tools" / "gpu").mkdir(parents=True)
     (root / "tools" / "gpu" / "lwjgl-test.jar").touch()
-    monkeypatch.setattr(engine, "ROOT", root)
-    monkeypatch.setattr(engine, "locate_java", lambda *args: "java-cpu")
+    monkeypatch.setattr(playback, "ROOT", root)
+    monkeypatch.setattr(playback, "locate_java", lambda *args: "java-cpu")
     monkeypatch.setattr(gpu_policy, "settings", lambda: {"render_gpu": "system"})
     monkeypatch.setattr(gpu_policy, "player_java", lambda mode: "java-gpu")
     monkeypatch.setattr(gpu_policy, "expected_device", lambda mode: {"name": "Test GPU"})
@@ -34,7 +34,7 @@ def test_custom_profile_is_a_single_jvm_argument_before_player_entry(tmp_path, m
         captured["args"] = args
         captured["cwd"] = kwargs["cwd"]
         return FakeProcess()
-    monkeypatch.setattr(engine.subprocess, "Popen", popen)
+    monkeypatch.setattr(playback.subprocess, "Popen", popen)
 
     library_root = tmp_path / "library"
     rendered = tmp_path / "rendered"
@@ -72,8 +72,8 @@ def test_default_launch_has_no_profile_property_and_stale_slot_logs_fallback(tmp
     root = tmp_path / "app"
     (root / "build").mkdir(parents=True)
     (root / "build" / "jme-player.jar").touch()
-    monkeypatch.setattr(engine, "ROOT", root)
-    monkeypatch.setattr(engine, "locate_java", lambda *args: "java-cpu")
+    monkeypatch.setattr(playback, "ROOT", root)
+    monkeypatch.setattr(playback, "locate_java", lambda *args: "java-cpu")
     monkeypatch.setattr(gpu_policy, "settings", lambda: {"render_gpu": "system"})
     monkeypatch.setattr(gpu_policy, "player_java", lambda mode: "java-gpu")
     monkeypatch.setattr(gpu_policy, "expected_device", lambda mode: {"name": "Test GPU"})
@@ -81,7 +81,7 @@ def test_default_launch_has_no_profile_property_and_stale_slot_logs_fallback(tmp
     def popen(args, **kwargs):
         captured["args"] = args
         return FakeProcess()
-    monkeypatch.setattr(engine.subprocess, "Popen", popen)
+    monkeypatch.setattr(playback.subprocess, "Popen", popen)
 
     rendered = tmp_path / "rendered"
     store = ControlProfileStore(tmp_path / "config" / "control-profiles.json", engine.atomic_json)

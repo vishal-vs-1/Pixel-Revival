@@ -197,8 +197,8 @@ def verify_archive(archive):
             ):
                 raise RuntimeError(f'Unexpected game archive: {name}')
         readme = zf.read('JAR Revival/README.txt').decode('utf-8')
-        for instruction in ['JAR Revival.exe', 'Import Java ME demo', 'Settings', 'Shared GPU',
-                            'Legacy GPU', 'CPU · compatibility', 'Artwork tab', 'AI setup',
+        for instruction in ['JAR Revival.exe', 'Import Java ME demo', 'Settings',
+                            'GPUs tab', 'CPU · compatibility', 'Artwork tab', 'AI setup',
                             'Prepare', 'data\\tools\\ai']:
             if instruction not in readme:
                 raise RuntimeError(f'Missing user instruction: {instruction}')

@@ -1,5 +1,5 @@
 import pytest
-from execution_policy import java_execution_arguments
+from systems.jme.execution_policy import java_execution_arguments
 
 
 def test_existing_games_keep_normal_execution_and_metadata_is_unchanged():

@@ -3,8 +3,8 @@ from pathlib import Path
 import sys,tempfile,json
 from PIL import Image
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
-from ai_backend import upscale
-from gpu_policy import settings,save_settings,devices
+from runtime_assets.ai import upscale
+from graphics.gpu_policy import settings,save_settings,devices
 saved=settings();available=devices()
 try:
     for mode in ['dedicated','integrated']:

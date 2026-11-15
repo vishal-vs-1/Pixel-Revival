@@ -3,12 +3,22 @@
 from dataclasses import asdict
 from pathlib import Path
 
-from game_storage import validate_game_id
+from storage.games import validate_game_id
 from systems.contracts import GameRef, NES
 from .rom import NesRomInfo, nes_game_id
 
 SCHEMA = 1
 RUNTIME_STATUSES = ("setup-needed", "not-probed", "ready", "unsupported")
+_LEGACY_ARTWORK_BACKENDS = {"xbrz", "hqx", "ai_pixel"}
+
+
+def load_metadata(game: dict, expected_id: str) -> dict:
+    """Open records saved by builds with artwork recipes unavailable in this build."""
+    if isinstance(game, dict) and isinstance(game.get("backend"), str):
+        if game["backend"] in _LEGACY_ARTWORK_BACKENDS:
+            # Fast Pixel works without an optional model and preserves the saved display scale.
+            game = {**game, "backend": "pixel"}
+    return validate_metadata(game, expected_id)
 
 
 def new_metadata(info: NesRomInfo, filename: str, backend: str,

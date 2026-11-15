@@ -16,9 +16,9 @@ from PIL import Image
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from ai_backend import executable,_padded_rgb,_restore
-from engine import enhance
-from gpu_policy import devices
+from runtime_assets.ai import executable,_padded_rgb,_restore
+from runtime_assets.pixel import enhance
+from graphics.gpu_policy import devices
 from runtime_assets.contracts import image_source_id
 from tools.device_metrics import host_memory,process_sample,WindowsGpuCounters,NvidiaMetrics
 

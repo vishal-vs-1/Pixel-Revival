@@ -5,7 +5,7 @@ import pytest
 
 import app as app_module
 from app import App
-from control_profiles import DEFAULT_SLOT_ID
+from controls.java_me import DEFAULT_SLOT_ID
 from systems.contracts import GameRef, JAVA_ME, NES
 from systems.ui_events import ApplicationEvent
 
@@ -217,7 +217,7 @@ def test_settings_opens_for_current_system_without_a_selected_game(monkeypatch, 
         created.append((dialog, parent, actual_store, on_saved, options))
         return dialog
 
-    monkeypatch.setattr(app_module, 'ControlProfileDialog', create_dialog)
+    monkeypatch.setattr('launcher.settings.ControlProfileDialog', create_dialog)
 
     App.open_settings(app)
     first, parent, actual_store, callback, options = created[0]

@@ -4,7 +4,7 @@ import tempfile
 import pytest
 from PIL import Image
 
-from engine import image_id
+from runtime_assets.contracts import image_source_id as image_id
 from runtime_assets.backends import PixelBackend
 from runtime_assets.contracts import (Recipe, SourceRecord, image_source_id,
                                       ncnn_recipe, pixel_recipe)

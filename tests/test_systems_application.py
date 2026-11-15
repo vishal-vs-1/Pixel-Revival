@@ -9,12 +9,13 @@ from unittest.mock import Mock
 import pytest
 
 from app import App
-from engine import Library, atomic_json
+from systems.jme.library import Library
+from storage.atomic import atomic_json
 from runtime_assets.contracts import pixel_recipe
 from runtime_assets.store import AssetStore
 from systems.application import ApplicationLibrary
 from systems.contracts import GameRef, ImportRequest, JAVA_ME, NES
-from systems.java_me import JavaMeSystem
+from systems.jme.system import JavaMeSystem
 from systems.presentation import SystemPresentation
 
 
@@ -164,7 +165,7 @@ def test_catalog_and_new_import_reject_duplicate_ids(tmp_path):
 def test_startup_recovery_reuses_service_and_keeps_legacy_metadata(tmp_path, monkeypatch):
     service = Mock()
     create_service = Mock(return_value=service)
-    monkeypatch.setattr("engine.AssetService", create_service)
+    monkeypatch.setattr("systems.jme.library.AssetService", create_service)
     legacy = Library(tmp_path / "library", tmp_path / "rendered")
     library = ApplicationLibrary((JavaMeSystem(legacy),), legacy.asset_service)
     recipe = pixel_recipe()

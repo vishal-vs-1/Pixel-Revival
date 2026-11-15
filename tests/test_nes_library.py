@@ -1,11 +1,12 @@
 import threading
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
 import pytest
 
-from game_storage import GameStorage
+from storage.games import GameStorage
 from systems.contracts import ImportRequest, NES
 from systems.nes.library import NesLibrary
 from systems.nes.controls import NesControlProfileStore, nes_default_seed
@@ -77,6 +78,25 @@ def test_import_failure_preserves_saves_and_does_not_publish(tmp_path):
     register.assert_not_called()
 
 
+@pytest.mark.parametrize('old_backend', ['ai_pixel', 'xbrz', 'hqx'])
+def test_legacy_artwork_settings_allow_listing_and_reimport(tmp_path, old_backend):
+    library = NesLibrary(tmp_path / 'nes', asset_service=Mock())
+    rom = source(tmp_path, 'Cartridge.nes')
+    game = add(library, rom)
+    workspace = library.workspace(game['id'])
+    metadata = workspace / 'game.json'
+    write_json(metadata, {**game, 'backend': old_backend, 'render_scale': 4})
+    save = workspace / 'saves' / 'progress.sav'
+    save.parent.mkdir(exist_ok=True)
+    save.write_bytes(b'progress')
+
+    assert library.games()[0]['backend'] == 'pixel'
+    assert json.loads(metadata.read_bytes())['backend'] == old_backend
+    imported = add(library, rom)
+    assert imported['backend'] == 'pixel' and imported['render_scale'] == 4
+    assert save.read_bytes() == b'progress'
+
+
 def test_detail_scale_change_refreshes_the_nes_pack_recipe(tmp_path):
     register = Mock()
     library = NesLibrary(tmp_path / "nes", asset_service=Mock(), register_artwork=register)
@@ -119,6 +139,29 @@ def test_failed_source_purge_restores_the_nes_source_not_a_jar(tmp_path, monkeyp
     assert (folder / "saves" / "slot").read_bytes() == b"slot"
     assert library.games() == [game]
     assert register.call_args.kwargs == {"recovering": True}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows prevents removal of open files")
+def test_delete_retries_after_locked_nes_cache_file_closes(tmp_path):
+    library = NesLibrary(tmp_path / "nes", asset_service=Mock())
+    game = add(library, source(tmp_path))
+    workspace = library.workspace(game["id"])
+    cache = workspace / "nes" / "bindings.sqlite"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_bytes(b"cache")
+    save = workspace / "saves" / "progress.sav"
+    save.parent.mkdir(exist_ok=True)
+    save.write_bytes(b"progress")
+
+    with cache.open("rb"):
+        with pytest.raises(PermissionError) as failure:
+            library.delete_game(game["id"])
+        assert failure.value.filename.endswith("bindings.sqlite")
+        assert library.games() == [game]
+
+    library.delete_game(game["id"])
+    assert not library.games()
+    assert save.read_bytes() == b"progress"
 
 
 def test_unrelated_delete_can_finish_while_first_waits(tmp_path):

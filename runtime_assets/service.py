@@ -1,82 +1,23 @@
 """Shared, non-blocking coordinator for imported and filesystem-discovered artwork."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-import json
-import math
-import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import queue
-import shutil
-import tempfile
 import threading
 import time
 import uuid
 from typing import Callable, Iterable
 
-from PIL import Image
-
-from runtime_assets.contracts import Recipe, SourceRecord, image_source_id
+from runtime_assets.contracts import Recipe, SourceRecord
 from runtime_assets.ingest import LegacyCacheImporter, MigrationReport
 from runtime_assets.integration import WorkspaceIntegration
 from runtime_assets.store import AssetStore, JobLease, JobRecord
 from runtime_assets.resources import ResourcePressure
-
-
-@dataclass
-class _Game:
-    workspace: Path
-    store: AssetStore
-    recipe: Recipe
-    integration: WorkspaceIntegration | None = None
-    paused: bool = False
-    generation: int = 0
-    dirty_at: float | None = None
-    next_scan: float = 0.0
-    compat_pending: bool = True
-    compat_recipe_key: str = ""
-    compat_sources: set[str] | None = None
-    player_active: bool = False
-    metrics_path: Path | None = None
-    live_enabled: bool = True
-    live_reason: str = "Background preparation ready"
-    metric_checked_at: float = 0.0
-    metric_updated: float = 0.0
-    metric_sampled: float = 0.0
-    metric_values: dict | None = None
-    baseline_frames: list[float] = field(default_factory=list)
-    baseline_inputs: list[float] = field(default_factory=list)
-    baseline_fps: list[float] = field(default_factory=list)
-    last_live_job_at: float = 0.0
-    last_live_job_seconds: float = 0.0
-    live_jobs_started: int = 0
-    batch_fallbacks: int = 0
-    batch_limit: int = 16
-    resource_reason: str = ''
-    removing: bool = False
-
-
-@dataclass(frozen=True)
-class _Work:
-    game: _Game
-    lease: JobLease
-    source: SourceRecord
-    recipe: Recipe
-
-
-@dataclass(frozen=True)
-class _Batch:
-    items: tuple[_Work, ...]
-
-
-@dataclass(frozen=True)
-class _Outcome:
-    work: _Work
-    output: str | None
-    error: str | None
-    elapsed: float
-    retry_single: bool = False
-    resource_defer: bool = False
+from runtime_assets.admission import can_admit_live
+from runtime_assets.discovery import ingest_events, read_source, reconcile_sources
+from runtime_assets.execution import execute, execute_batch
+from runtime_assets.publication import publish_compatibility, publish_ready, read_compatibility_state
+from runtime_assets.work_state import _Batch, _Game, _Outcome, _Work
 
 
 class AssetService:
@@ -165,7 +106,7 @@ class AssetService:
             if self._closed:
                 raise RuntimeError("AssetService is closed")
             if current is None:
-                key, sources = (self._read_compatibility_state(root, recipe.key)
+                key, sources = (read_compatibility_state(root, recipe.key)
                                 if integration is None else ("", None))
                 current = _Game(root, store, recipe, integration=integration, paused=paused or self._paused_all,
                                 compat_recipe_key=key, compat_sources=sources)
@@ -201,7 +142,7 @@ class AssetService:
             if not isinstance(source, SourceRecord):
                 raise TypeError("Imported asset batches must contain SourceRecord values")
             path = game.store.resolve_path(source.relative_path)
-            verified = self._read_source(path, source.source_id)
+            verified = read_source(path, source.source_id)
             if (verified.width, verified.height) != (source.width, source.height):
                 raise ValueError("Imported source dimensions do not match its record")
             game.store.register_source(source)
@@ -377,83 +318,15 @@ class AssetService:
             raise ValueError("Workspace does not match the registered game")
         return game
 
-    @staticmethod
-    def _read_source(path: Path, expected_id: str | None = None) -> Image.Image:
-        with Image.open(path) as decoded:
-            width, height = decoded.size
-            if width <= 0 or height <= 0 or width * height > 4_194_304:
-                raise ValueError("Source image dimensions are outside the supported limit")
-            decoded.load()
-            image = decoded.convert("RGBA")
-        source_id = image_source_id(image)
-        if expected_id is not None and source_id != expected_id:
-            raise ValueError("Source pixels do not match their source ID")
-        return image
 
     def _reconcile_sources(self, game: _Game) -> int:
-        known = {source.source_id for source in game.store.list_sources()}
-        registered = 0
-        directory = game.workspace / "original-assets"
-        if directory.is_dir():
-            for path in sorted(directory.glob("*.png")):
-                if len(path.stem) != 64 or path.stem in known:
-                    continue
-                try:
-                    resolved = path.resolve(strict=True)
-                    resolved.relative_to(game.workspace)
-                    image = self._read_source(resolved, path.stem)
-                    source = SourceRecord(path.stem, image.width, image.height,
-                                          resolved.relative_to(game.workspace).as_posix(),
-                                          "legacy-original")
-                    game.store.register_source(source)
-                    game.store.enqueue(source.source_id, game.recipe.key)
-                    known.add(source.source_id)
-                    registered += 1
-                except (OSError, ValueError):
-                    continue
+        registered = reconcile_sources(game)
         if registered:
             self._notify(game.workspace.name)
         return registered
 
     def _ingest_events(self, game: _Game, limit: int) -> int:
-        event_dir = game.workspace / ".runtime" / "events"
-        if not event_dir.is_dir():
-            return 0
-        accepted = 0
-        for event_path in sorted(event_dir.glob("*.json"))[:limit]:
-            try:
-                event = json.loads(event_path.read_text(encoding="utf-8"))
-                if (not isinstance(event, dict) or event.get("schema") != 1 or
-                        event.get("type") != "capture-ready"):
-                    raise ValueError("Unsupported capture event")
-                event_id = event.get("event_id")
-                source_id = event.get("source_id")
-                relative = event.get("source_path")
-                source_parts = PurePosixPath(relative).parts if isinstance(relative, str) else ()
-                if (not isinstance(source_id, str) or len(source_id) != 64 or
-                        not source_parts or source_parts[0] not in ("original-assets", "captures") or
-                        PurePosixPath(relative).stem != source_id):
-                    raise ValueError("Capture event source path is invalid")
-                source_path = game.store.resolve_path(relative)
-                source_path.resolve(strict=True).relative_to(game.workspace)
-                image = self._read_source(source_path, source_id)
-                if (event.get("width"), event.get("height")) != image.size:
-                    raise ValueError("Capture event dimensions do not match its image")
-                origin = event.get("origin")
-                if not isinstance(origin, str) or not origin or len(origin) > 64:
-                    raise ValueError("Capture event origin is invalid")
-                source = SourceRecord(source_id, image.width, image.height, relative, origin)
-                game.store.register_capture_event(event_id, source, game.recipe)
-                event_path.unlink(missing_ok=True)
-                accepted += 1
-            except (OSError, ValueError, TypeError, KeyError):
-                # A malformed service-owned event is isolated so it cannot block later events.
-                rejected = game.workspace / ".runtime" / "rejected-events"
-                rejected.mkdir(parents=True, exist_ok=True)
-                try:
-                    os.replace(event_path, rejected / (event_path.name + "." + uuid.uuid4().hex))
-                except OSError:
-                    pass
+        accepted = ingest_events(game, limit)
         if accepted:
             game.dirty_at = time.monotonic() + 0.5
             self._notify(game.workspace.name)
@@ -592,67 +465,8 @@ class AssetService:
             return
 
     def _can_admit_live(self, game: _Game) -> bool:
-        now = time.monotonic()
-        if not game.live_enabled:
-            self._set_live_reason(game, "Live image work paused by the user")
-            return False
-        if self._active is not None:
-            self._set_live_reason(game, "Waiting for the current image job to finish")
-            return False
-        if game.metrics_path is None:
-            self._set_live_reason(game, "Waiting for player performance data")
-            return False
-        if now - game.metric_checked_at >= 0.5:
-            game.metric_checked_at = now
-            try:
-                report = json.loads(game.metrics_path.read_text(encoding="utf-8"))
-                updated = float(report.get("updated", 0.0))
-                values = {key: float(report.get(key, 0.0)) for key in
-                          ("fps", "frame_p95_ms", "input_queue_p95_ms")}
-                if any(not math.isfinite(value) or value < 0 for value in values.values()):
-                    raise ValueError("non-finite player metrics")
-                game.metric_updated = updated
-                game.metric_values = values
-            except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                self._set_live_reason(game, "Waiting for fresh player performance data")
-                return False
-        report = game.metric_values or {}
-        age = time.time() - game.metric_updated
-        if age < -2.0 or age > 4.0 or report.get("fps", 0.0) <= 0 or report.get("frame_p95_ms", 0.0) <= 0:
-            self._set_live_reason(game, "Performance data is stale; image work is deferred")
-            return False
-        if game.metric_updated != game.metric_sampled and self._active is None:
-            game.metric_sampled = game.metric_updated
-            if len(game.baseline_frames) < 4:
-                game.baseline_frames.append(report["frame_p95_ms"])
-                game.baseline_inputs.append(report["input_queue_p95_ms"])
-                game.baseline_fps.append(report["fps"])
-        if len(game.baseline_frames) < 4:
-            self._set_live_reason(game, "Measuring game performance before live image work")
-            return False
-        baseline_frame = self._median(game.baseline_frames)
-        baseline_input = self._median(game.baseline_inputs)
-        baseline_fps = self._median(game.baseline_fps)
-        if (report["frame_p95_ms"] > max(60.0, baseline_frame * 1.8 + 10.0) or
-                report["input_queue_p95_ms"] > max(25.0, baseline_input * 2.0 + 10.0) or
-                report["fps"] < max(10.0, baseline_fps * 0.60)):
-            self._set_live_reason(game, "Frame or input latency is high; image work is deferred")
-            return False
-        if now - game.last_live_job_at < 8.0:
-            cooldown = max(8.0, min(30.0, game.last_live_job_seconds * 2.0))
-            if now - game.last_live_job_at < cooldown:
-                self._set_live_reason(game, "Live image-work cooldown; saved artwork remains active")
-                return False
-        self._set_live_reason(game, "Performance headroom available for one small image")
-        return True
+        return can_admit_live(game, busy=self._active is not None, set_reason=self._set_live_reason)
 
-    @staticmethod
-    def _median(values: list[float]) -> float:
-        ordered = sorted(values)
-        middle = len(ordered) // 2
-        if len(ordered) % 2:
-            return ordered[middle]
-        return (ordered[middle - 1] + ordered[middle]) / 2.0
 
     def _set_live_reason(self, game: _Game, reason: str):
         if game.live_reason == reason:
@@ -726,76 +540,11 @@ class AssetService:
                             time.monotonic() - started,resource_defer=isinstance(error,ResourcePressure))
 
     def _execute(self, work: _Work) -> str:
-        store, source, recipe = work.game.store, work.source, work.recipe
-        source_path = store.resolve_path(source.relative_path)
-        image = self._read_source(source_path, source.source_id)
-        if image.size != (source.width, source.height):
-            raise ValueError("Source dimensions changed after registration")
-        backend = self._backend_factory(recipe)
-        temporary_root = work.game.workspace / ".runtime" / "tmp"
-        temporary_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="job-", dir=temporary_root) as workdir:
-            result = backend.enhance(image, recipe, Path(workdir)).convert("RGBA")
-            self._publish_execution_report(work.game.workspace,Path(workdir))
-            return self._save_result(work, result)
+        return execute(work, self._backend_factory, read_source)
 
     def _execute_batch(self, items: tuple[_Work, ...]) -> list[str]:
-        first = items[0]
-        images = []
-        for work in items:
-            if work.game is not first.game or work.recipe != first.recipe:
-                raise ValueError("A model batch must share one workspace and recipe")
-            image = self._read_source(work.game.store.resolve_path(work.source.relative_path), work.source.source_id)
-            if image.size != (work.source.width, work.source.height):
-                raise ValueError("Source dimensions changed after registration")
-            images.append(image)
-        backend = self._backend_factory(first.recipe)
-        temporary_root = first.game.workspace / ".runtime" / "tmp"
-        temporary_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="batch-", dir=temporary_root) as workdir:
-            results = list(backend.enhance_many(images, first.recipe, Path(workdir)))
-            if len(results) != len(items):
-                raise ValueError("Backend returned an unexpected batch size")
-            self._publish_execution_report(first.game.workspace,Path(workdir))
-            return [self._save_result(work, result.convert("RGBA")) for work, result in zip(items, results)]
+        return execute_batch(items, self._backend_factory, read_source)
 
-    @staticmethod
-    def _publish_execution_report(workspace: Path,workdir: Path):
-        source=workdir/'logs/last-conversion-gpu.json'
-        try:
-            if not source.is_file() or source.stat().st_size>32_768:return
-            report=json.loads(source.read_text(encoding='utf-8'))
-            if not isinstance(report,dict):return
-            destination=workspace/'logs/last-conversion-gpu.json'
-            destination.parent.mkdir(parents=True,exist_ok=True)
-            temporary=destination.with_name('conversion-'+uuid.uuid4().hex+'.tmp')
-            try:
-                temporary.write_text(json.dumps(report,indent=2),encoding='utf-8')
-                os.replace(temporary,destination)
-            finally:temporary.unlink(missing_ok=True)
-        except (OSError,ValueError):pass
-
-    @staticmethod
-    def _save_result(work: _Work, result: Image.Image) -> str:
-        store, source, recipe = work.game.store, work.source, work.recipe
-        expected = (source.width * recipe.scale, source.height * recipe.scale)
-        if result.size != expected:
-            raise ValueError(f"Backend returned {result.size}; expected {expected}")
-        relative = f"textures-cache/{recipe.key}/{source.source_id}.png"
-        target = store.resolve_path(relative)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(target.name + "." + work.lease.token + ".tmp")
-        try:
-            result.save(temporary, format="PNG")
-            with Image.open(temporary) as checked:
-                checked.verify()
-            with Image.open(temporary) as checked:
-                if checked.size != expected:
-                    raise ValueError("Encoded enhancement has unexpected dimensions")
-            os.replace(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return relative
 
     def _drain_outcomes(self):
         changed = set()
@@ -834,113 +583,11 @@ class AssetService:
             self._notify(game_id)
 
     def _publish_compatibility(self, game: _Game, *, limit: int):
-        """Maintain the current player's legacy texture folder outside active play."""
-        jobs = game.store.list_ready(game.recipe.key)
-        marker = game.workspace / ".runtime" / "compatibility.json"
-        if game.compat_recipe_key != game.recipe.key or game.compat_sources is None:
-            game.compat_recipe_key, game.compat_sources = self._read_compatibility_state(
-                game.workspace, game.recipe.key)
-        already = game.compat_sources
-        pending = []
-        for job in jobs:
-            if not job.relative_output:
-                continue
-            source = game.store.get_source(job.source_id)
-            if source is None:
-                continue
-            directory = "textures" if game.recipe.algorithm == "scale2x-rgba" else "textures-ai"
-            target = game.store.resolve_path(f"{directory}/{job.source_id}.png")
-            if (job.source_id in already and target.is_file()) or (
-                    game.workspace / "textures-ui" / f"{job.source_id}.png").is_file():
-                already.add(job.source_id)
-                continue
-            pending.append((job, target))
-        for job, target in pending[:limit]:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            temporary = target.with_name(target.name + "." + uuid.uuid4().hex + ".tmp")
-            try:
-                shutil.copyfile(game.store.resolve_path(job.relative_output), temporary)
-                with self._compat_commit_lock:
-                    if game.paused:
-                        game.compat_pending = True
-                        return
-                    os.replace(temporary, target)
-                    already.add(job.source_id)
-            finally:
-                temporary.unlink(missing_ok=True)
-        remaining = [job for job, _ in pending[limit:]]
-        if remaining:
-            game.compat_pending = True
-            return
-        ready_ids = {job.source_id for job in jobs if job.relative_output}
-        game.compat_pending = not ready_ids.issubset(already)
-        if not game.compat_pending:
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            temporary = marker.with_name(marker.name + "." + uuid.uuid4().hex + ".tmp")
-            payload = {"schema": 1, "recipe_key": game.recipe.key,
-                       "sources": sorted(ready_ids)}
-            try:
-                temporary.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")),
-                                     encoding="utf-8")
-                os.replace(temporary, marker)
-                game.compat_recipe_key = game.recipe.key
-                game.compat_sources = set(ready_ids)
-            finally:
-                temporary.unlink(missing_ok=True)
+        publish_compatibility(game, limit=limit, commit_lock=self._compat_commit_lock)
 
-    @staticmethod
-    def _read_compatibility_state(workspace: Path, recipe_key: str) -> tuple[str, set[str]]:
-        marker = workspace / ".runtime" / "compatibility.json"
-        try:
-            saved = json.loads(marker.read_text(encoding="utf-8"))
-            if saved.get("recipe_key") == recipe_key and isinstance(saved.get("sources"), list):
-                return recipe_key, {value for value in saved["sources"] if isinstance(value, str)}
-        except (OSError, ValueError, TypeError):
-            pass
-        return "", set()
 
     def _publish_ready(self, game: _Game):
-        valid_sources = []
-        for job in game.store.list_ready(game.recipe.key):
-            if not job.relative_output:
-                game.store.invalidate_ready(job.source_id, job.recipe_key)
-                continue
-            source = game.store.get_source(job.source_id)
-            if source is None:
-                game.store.invalidate_ready(job.source_id, job.recipe_key)
-                continue
-            path = game.store.resolve_path(job.relative_output)
-            try:
-                with Image.open(path) as image:
-                    image.verify()
-                with Image.open(path) as image:
-                    is_valid = image.size == (source.width * game.recipe.scale,
-                                              source.height * game.recipe.scale)
-            except (OSError, ValueError):
-                is_valid = False
-            if is_valid:
-                valid_sources.append(job.source_id)
-            else:
-                game.store.invalidate_ready(job.source_id, job.recipe_key)
-        ready_dir = game.workspace / ".runtime" / "ready"
-        ready_dir.mkdir(parents=True, exist_ok=True)
-        manifest = ready_dir / (game.recipe.key + ".json")
-        try:
-            previous = json.loads(manifest.read_text(encoding="utf-8"))
-            game.generation = max(game.generation, int(previous.get("generation", 0)))
-        except (OSError, ValueError, TypeError):
-            pass
-        game.generation += 1
-        payload = {"schema": 1, "generation": game.generation,
-                   "recipe_key": game.recipe.key, "scale": game.recipe.scale,
-                   "sources": sorted(valid_sources)}
-        temporary = manifest.with_name(manifest.name + "." + uuid.uuid4().hex + ".tmp")
-        try:
-            temporary.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")),
-                                 encoding="utf-8")
-            os.replace(temporary, manifest)
-        finally:
-            temporary.unlink(missing_ok=True)
+        publish_ready(game)
         self._notify(game.workspace.name)
 
     def close(self, timeout: float = 1.0):

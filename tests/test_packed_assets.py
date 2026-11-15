@@ -6,8 +6,9 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from engine import enhance, image_id
-from atlas_enhancement import enhance_decoded_ai
+from runtime_assets.pixel import enhance
+from runtime_assets.contracts import image_source_id as image_id
+from systems.jme.resources.atlas import enhance_decoded_ai
 
 
 class PackedAssetsTest(unittest.TestCase):
@@ -37,7 +38,7 @@ class PackedAssetsTest(unittest.TestCase):
             result = enhance(image)
             result.putalpha(alpha)
             return result
-        with patch('ai_backend.upscale', side_effect=fake_ai):
+        with patch('runtime_assets.ai.upscale', side_effect=fake_ai):
             count = enhance_decoded_ai(self.folder, items, self.folder / 'textures', enhance)
         self.assertEqual(count, len(items))
         for key, path in items:

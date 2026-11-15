@@ -67,13 +67,13 @@ def _copy_source(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, ignore=ignore)
 
 
-def _apply_generated_patches(source: Path, output: Path) -> None:
+def _apply_generated_patches(source: Path, output: Path, *, inprocess: bool = False) -> None:
     from tools.patch_mesen import generate
 
     metadata = json.loads(UPSTREAM.read_text(encoding="utf-8"))
     if output.exists():
         raise FileExistsError(f"Refusing to replace an existing generated patch folder: {output}")
-    generate(source, output)
+    generate(source, output, inprocess=inprocess)
     for relative_text in metadata["generated_files"]:
         relative = Path(relative_text)
         if relative.is_absolute() or ".." in relative.parts:
@@ -163,12 +163,16 @@ def _finish_managed(args: argparse.Namespace, scratch: Path, runtime_root: Path,
         shutil.copy2(source_archive, published_source)
     staged_player.rename(player)
     native_hash = hashlib.sha256(core.read_bytes()).hexdigest()
+    features = ["enhanced-pack-v1", "nes-tile-capture-rnt1"]
+    factory_source = prepared / "InteropDLL" / "EmuApiWrapper.cpp"
+    if "SetRevivalSaveFolder(" in factory_source.read_text(encoding="utf-8"):
+        features.append("nes-inprocess-host-v1")
     (runtime_root / "nes" / "build-info.json").write_text(json.dumps({
         "schema": 1, "upstream_repository": "https://github.com/nesdev-org/MesenCE.git",
         "upstream_commit": commit, "native_core_sha256": native_hash,
         "graphics_dll_sha256": identity["dll_sha256"],
         "graphics_manifest": "graphics-runtime.json",
-        "features": ["enhanced-pack-v1", "nes-tile-capture-rnt1"],
+        "features": features,
         "graphics_dll_loaded_from": "../common/revival_graphics.dll",
         "corresponding_source": f"../source/{published_source.name}",
     }, indent=2) + "\n", encoding="utf-8")
@@ -237,7 +241,7 @@ def build(args: argparse.Namespace) -> Path:
     for name in ("nes-bridge", "native-graphics"):
         shutil.copytree(ROOT / name, layout / name,
                         ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
-    _apply_generated_patches(prepared, generated)
+    _apply_generated_patches(prepared, generated, inprocess=args.inprocess)
 
     native_build = scratch / "native"
     from tools.build_graphics import _cmake
@@ -290,6 +294,9 @@ def _make_mesen_source_bundle(source: Path, target: Path) -> None:
                         continue
                     archive.write(path, f"mesen-source/{name}/{path.relative_to(component).as_posix()}")
         archive.write(ROOT / "tools" / "patch_mesen.py", "mesen-source/tools/patch_mesen.py")
+        patches = ROOT / "tools" / "patches"
+        for path in [patches / "__init__.py", *sorted((patches / "mesen").glob("*.py"))]:
+            archive.write(path, f"mesen-source/{path.relative_to(ROOT).as_posix()}")
         archive.write(ROOT / "LICENSE", "mesen-source/LICENSE-JAR-Revival")
         if not (source / "LICENSE").is_file():
             raise FileNotFoundError("Pinned Mesen source license is missing from the corresponding-source package")
@@ -305,9 +312,12 @@ def main() -> int:
     parser.add_argument("--msbuild")
     parser.add_argument("--dotnet")
     parser.add_argument("--nuget-cache", type=Path)
+    parser.add_argument("--inprocess", action="store_true", help="Build experimental host exports into an isolated runtime.")
     parser.add_argument("--resume-managed-attempt", type=Path,
                         help="Finish managed publish from an attempt whose native MesenCore build passed.")
     args = parser.parse_args()
+    if args.inprocess and (args.resume_managed_attempt or args.runtime_root.resolve() == DEFAULT_RUNTIME):
+        parser.error("--inprocess requires a separate --runtime-root and a fresh native build")
     if args.resume_managed_attempt:
         resume_managed(args)
     else:

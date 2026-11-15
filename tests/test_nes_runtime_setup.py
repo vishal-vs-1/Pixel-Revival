@@ -1,6 +1,6 @@
-from pathlib import Path
+import json
 
-from systems.nes.runtime_setup import NesRuntimeLocator, RUNTIME_ROOT_ENV
+from systems.nes.runtime_setup import IN_PROCESS_ENV, IN_PROCESS_FEATURE, NesRuntimeLocator, RUNTIME_ROOT_ENV
 
 
 class StubRuntime:
@@ -68,6 +68,24 @@ def test_capture_enabled_developer_build_precedes_original_only_build(tmp_path):
     ).locate()
 
     assert runtime is not None and runtime.executable == capture_executable
+
+
+def test_experimental_build_does_not_replace_stable_runtime(tmp_path):
+    stable, _ = make_runtime_files(tmp_path / 'build' / 'common-runtime-u18c-capture')
+    experimental_root = tmp_path / 'build' / 'common-runtime-inprocess-v1'
+    experimental, manifest = make_runtime_files(experimental_root)
+    manifest.with_name('build-info.json').write_text(json.dumps({'features': [IN_PROCESS_FEATURE]}))
+
+    def locate(environment):
+        return NesRuntimeLocator(
+            tmp_path, packaged=False, environment=environment,
+            runtime_factory=lambda exe, manifest: StubRuntime(exe, manifest, True),
+            inprocess_factory=lambda _dll, exe, manifest: StubRuntime(exe, manifest, True),
+        ).locate()
+
+    assert locate({}).executable == stable
+    assert locate({RUNTIME_ROOT_ENV: str(experimental_root)}) is None
+    assert locate({IN_PROCESS_ENV: '1'}).executable == experimental
 
 
 def test_explicit_runtime_root_overrides_all_discovery(tmp_path):

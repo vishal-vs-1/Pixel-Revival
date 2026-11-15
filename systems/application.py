@@ -3,7 +3,7 @@
 from collections.abc import Iterable
 from threading import Event, Lock, RLock
 
-from game_storage import validate_game_id
+from storage.games import validate_game_id
 from .contracts import GameRef, ImportRequest, JAVA_ME, SystemBackend
 from .registry import GameIndex, SystemRegistry
 

@@ -6,7 +6,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from engine import locate_java
+from systems.jme.jdk import locate_java
 
 classes = ROOT / 'build' / 'classes'
 test_classes = ROOT / 'build' / 'runtime-asset-check-classes'

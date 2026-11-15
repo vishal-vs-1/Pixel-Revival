@@ -6,8 +6,9 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from engine import Library, ROOT, locate_java
-from startup_cleaner import MRBEAN, prepare_startup, select_startup, digest
+from systems.jme.library import Library, ROOT
+from systems.jme.jdk import locate_java
+from systems.jme.startup_cleaner import MRBEAN, prepare_startup, select_startup, digest
 
 
 class StartupTests(unittest.TestCase):
@@ -31,7 +32,7 @@ class StartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT/'build') as work:
             work=Path(work)
             # Merely detecting a known wrapper must never compile or remove it.
-            with patch('startup_cleaner.subprocess.run',side_effect=AssertionError('Unexpected cleanup')):
+            with patch('systems.jme.startup_cleaner.subprocess.run',side_effect=AssertionError('Unexpected cleanup')):
                 default,report=select_startup(source,work/'startup')
             self.assertEqual(default,source)
             self.assertEqual(report['status'],'verified_wrapper')
@@ -44,7 +45,7 @@ class StartupTests(unittest.TestCase):
                 for name in new.namelist():
                     if name!='WRAPPER.class':self.assertEqual(old.read(name),new.read(name),name)
             stamp=playable.stat().st_mtime_ns
-            with patch('startup_cleaner.subprocess.run',side_effect=AssertionError('Recompiled cached game')):
+            with patch('systems.jme.startup_cleaner.subprocess.run',side_effect=AssertionError('Recompiled cached game')):
                 reused,_=select_startup(source,work/'startup',enabled=True)
                 restored,_=select_startup(source,work/'startup',enabled=False)
             self.assertEqual(reused,playable);self.assertEqual(restored,source)
@@ -67,8 +68,8 @@ class StartupTests(unittest.TestCase):
             chosen=work/'selected.jar'
             for renderer in ['gpu','cpu']:
                 game['renderer']=renderer
-                with patch('engine.ROOT',app_root),patch.object(library,'prepare_startup',return_value=chosen),patch('engine.subprocess.Popen') as launch,\
-                     patch('gpu_policy.player_java',return_value=locate_java()),patch('gpu_policy.expected_device',return_value=None):
+                with patch('systems.jme.playback.ROOT',app_root),patch.object(library,'prepare_startup',return_value=chosen),patch('systems.jme.playback.subprocess.Popen') as launch,\
+                     patch('graphics.gpu_policy.player_java',return_value=locate_java()),patch('graphics.gpu_policy.expected_device',return_value=None):
                     library.launch(game)
                     arguments=launch.call_args.args[0]
                     self.assertIn(str(chosen) if renderer=='gpu' else chosen.as_uri(),arguments)

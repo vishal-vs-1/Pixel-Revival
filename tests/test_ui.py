@@ -8,11 +8,11 @@ from unittest.mock import Mock
 import pytest
 
 from app import App
-from control_profiles import ControlProfileStore
-from engine import atomic_json
+from controls.java_me import ControlProfileStore
+from storage.atomic import atomic_json
 from runtime_assets.contracts import pixel_recipe
 from systems.contracts import ImportRequest, JAVA_ME, NES
-from ui_widgets import ScrollableFrame
+from launcher.widgets import ScrollableFrame
 
 
 def destroy_widget(widget):
@@ -72,9 +72,8 @@ def make_app(root,monkeypatch,base,*,count=20):
     monkeypatch.setattr('app.Library',lambda **kwargs:library)
     monkeypatch.setattr('app.DATA_ROOT',base)
     monkeypatch.setattr('app.APP_ROOT',base)
-    monkeypatch.setattr('app.RESOURCE_ROOT',base)
     monkeypatch.setattr('app.gpu_devices',lambda:[])
-    monkeypatch.setattr('ai_backend.available',lambda:False)
+    monkeypatch.setattr('runtime_assets.ai.available',lambda:False)
     app=App(root)
     root.geometry('980x680')
     root.title('JAR Revival UI check — test data only')
@@ -82,20 +81,55 @@ def make_app(root,monkeypatch,base,*,count=20):
     return app,library
 
 
-def test_global_renderer_choice_is_separate_from_physical_gpu(root,tmp_path,monkeypatch):
-    app,_=make_app(root,monkeypatch,tmp_path,count=1)
-    assert app.graphics_backend_choice.get()=='Shared GPU · common-v1'
-    physical_gpu=app.render_gpu.get()
+def test_java_character_artwork_routes_record_and_replacement(root, tmp_path, monkeypatch):
+    app, library = make_app(root, monkeypatch, tmp_path, count=1)
+    identity = next(iter(app.games))
+    app.tree.selection_set(identity)
+    monkeypatch.setattr(app, 'launch_game', Mock())
+    from PIL import Image
+    from systems.jme.pose_artwork import PoseArtwork
+    artwork = PoseArtwork(app.library.workspace(identity))
+    pose = artwork.folder('poses') / ('a' * 64 + '.png')
+    pose.parent.mkdir(parents=True)
+    Image.new('RGBA', (8, 10), 'red').save(pose)
+    artwork.assign(None, pose)
+    artwork.folder('selected').mkdir()
+    (artwork.folder('selected') / 'all-poses').touch()
+    panel = app.playable_artwork
+    panel.refresh(app.game_if_selected())
+    assert panel.play_button.instate(['disabled'])
+    assert len(panel.choices) == 1
+    panel.play_button.invoke()
+    app.launch_game.assert_not_called()
 
-    app.graphics_backend_choice.set('Legacy GPU · compatibility')
-    app.set_graphics_backend()
-    assert app.graphics_backend_store.load().backend=='legacy'
-    assert app.render_gpu.get()==physical_gpu
+    panel.show_candidates.set(True)
+    panel.update_selection()
+    panel.pose_picker.current(1)
+    panel._select_pose(None)
+    panel.confirm_button.invoke()
+    assert artwork.selected(pose.stem).is_file()
+    assert panel.play_button.instate(['!disabled'])
 
-    app.graphics_backend_choice.set('Shared GPU · common-v1')
-    app.set_graphics_backend()
-    assert app.graphics_backend_store.load().backend=='common-v1'
-    assert 'Legacy GPU compatibility' in app.status.get()
+    panel.record_button.invoke()
+    panel.play_button.invoke()
+    assert [call.kwargs['pose_mode'] for call in app.launch_game.call_args_list] == ['record', 'replace']
+
+    monkeypatch.setattr(library, 'regenerate_playable_poses', lambda game_id: artwork.regenerate(), raising=False)
+    assert panel.play_regenerated_button.instate(['disabled'])
+    panel.regenerate_button.invoke()
+    deadline = time.monotonic() + 5
+    while app.busy and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+    assert not app.busy
+    assert panel.regenerated_preview.picture
+    assert panel.play_regenerated_button.instate(['!disabled'])
+    panel.play_regenerated_button.invoke()
+    assert app.launch_game.call_args.kwargs['pose_mode'] == 'regenerated'
+
+    app.system_buttons[NES].invoke()
+    assert app.playable_artwork is panel
+    assert panel.detect_button.master.winfo_manager() == 'pack'
 
 
 def test_wheel_scrolls_only_the_panel_containing_the_event(root):
@@ -276,7 +310,7 @@ def test_nes_mode_uses_rom_picker_profile_aspect_and_honest_player_status(root,t
     launch.assert_not_called()
 
     chosen=tmp_path/'Choose.nes'
-    monkeypatch.setattr('app.filedialog.askopenfilename',lambda **kwargs:str(chosen))
+    monkeypatch.setattr('launcher.operations.filedialog.askopenfilename',lambda **kwargs:str(chosen))
     app.start_pending=Mock()
     app.import_game()
     assert app.pending_imports[-1]==ImportRequest(NES,chosen,'pixel')
@@ -329,4 +363,63 @@ def test_nes_original_playback_stays_available_without_capture_support(root,tmp_
     assert str(app.play_button.cget('state'))=='disabled'
     assert app.compare_button.cget('text')=='Play original'
     assert str(app.compare_button.cget('state'))=='normal'
+    app.library.close(timeout=0.1)
+
+
+def test_nes_artwork_detection_prompts_for_image_and_routes_play(root, tmp_path, monkeypatch):
+    from PIL import Image
+    from systems.nes.pose_layouts import Cell, Detection, REPLAYS, pose_key
+
+    app, _ = make_app(root, monkeypatch, tmp_path, count=1)
+    assert not app.playable_artwork.nes_tools.winfo_manager()
+    app.system_buttons[NES].invoke()
+    source = tmp_path / 'Test.nes'
+    source.write_bytes(b'NES\x1a\x01\x01' + bytes(10 + 16384 + 8192))
+    game = app.nes_library.import_game(ImportRequest(NES, source, 'pixel'))
+    monkeypatch.setitem(REPLAYS, game['id'], next(iter(REPLAYS.values())))
+    artwork = tmp_path / 'player.png'
+    Image.new('RGBA', (16, 16), 'orange').save(artwork)
+    workspace = app.nes_library.workspace(game['id'])
+    detected = workspace / 'playable-assets' / 'detected.png'
+    detected.parent.mkdir()
+    Image.new('RGBA', (16, 16), 'red').save(detected)
+    pose = ((Cell(1, 'FF162718', 0),) * 4,)
+    mock_detect = Mock(return_value=Detection(pose, detected))
+    monkeypatch.setattr(app.nes_library.playable_assets, 'detect', mock_detect)
+    (detected.parent / 'detected.json').write_text(
+        '{"game":"' + game['id'] + '","poses":[[[1,"FF162718",0],[1,"FF162718",0],[1,"FF162718",0],[1,"FF162718",0]]]}')
+    picker = Mock(return_value=str(artwork))
+    monkeypatch.setattr('launcher.playable_artwork_ui.filedialog.askopenfilename', picker)
+    launch = Mock()
+    monkeypatch.setattr(app, 'launch_game', launch)
+    app.refresh()
+    root.update()
+    app.playable_artwork.detect_button.invoke()
+    deadline = time.monotonic() + 3
+    while app.playable_artwork.detecting and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+    mock_detect.assert_called_once()
+    picker.assert_called_once()
+    assert (detected.parent / 'replacement.png').is_file()
+    app.playable_artwork.pose_picker.current(1)
+    app.playable_artwork.pose_picker.event_generate('<<ComboboxSelected>>')
+    root.update()
+    app.playable_artwork.image_button.invoke()
+    override = app.nes_library.playable_assets.image_path(workspace, pose_key(pose[0]))
+    assert override.is_file()
+    app.playable_artwork.clear_button.invoke()
+    assert not override.exists() and (detected.parent / 'replacement.png').is_file()
+    app.playable_artwork.play_button.invoke()
+    assert launch.call_args.kwargs == {'player_replacement': True}
+    document = detected.parent / 'detected.json'
+    document.write_text(document.read_text().rstrip('}') + ',"slots":[0,1,2,3]}')
+    app.playable_artwork.refresh(game)
+    app.playable_artwork.scan_button.invoke()
+    deadline = time.monotonic() + 3
+    while app.playable_artwork.detecting and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+    assert mock_detect.call_args.kwargs == {'state': None, 'latest': True}
+    assert picker.call_count == 2
     app.library.close(timeout=0.1)

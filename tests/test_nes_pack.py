@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from PIL import Image
 
@@ -62,6 +63,21 @@ def test_pack_scale_two_uses_cached_four_x_without_new_job(tmp_path):
     assert generation is not None
     assert Image.open(generation.directory / "page-000.png").size == (16, 16)
     assert store.counts(recipe.key)["QUEUED"] == 0
+
+
+def test_recipe_change_queues_saved_nes_tiles_without_a_new_capture(tmp_path):
+    identity = "e" * 64
+    workspace = tmp_path / identity
+    store = AssetStore(workspace)
+    recipe = pixel_recipe()
+    _capture(workspace, identity)
+    NesCaptureIntegration(identity, recipe).admit(workspace, store, {"id": identity}, recipe, True)
+
+    replacement = replace(recipe, implementation_version="test-replacement")
+    store.register_recipe(replacement)
+    NesCaptureIntegration(identity, replacement).admit(
+        workspace, store, {"id": identity}, replacement, True)
+    assert store.counts(replacement.key)["QUEUED"] == 1
 
 
 def test_invalid_ready_output_is_omitted_and_previous_pack_is_kept(tmp_path):

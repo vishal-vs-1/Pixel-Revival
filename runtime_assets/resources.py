@@ -105,7 +105,7 @@ def plan_budget(device,available_ram,logical_cpus,*,gpu_free=None):
 
 
 def current_budget():
-    from gpu_policy import devices,settings,choose_device
+    from graphics.gpu_policy import devices,settings,choose_device
     available=devices()
     if not available:
         return PreparationBudget(1,65_536,reason='AI artwork needs a compatible graphics device. Choose Fast pixel for CPU preparation.')

@@ -10,8 +10,8 @@ from PIL import Image
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from ai_backend import upscale,upscale_many
-from gpu_policy import inference_arguments
+from runtime_assets.ai import upscale,upscale_many
+from graphics.gpu_policy import inference_arguments
 from runtime_assets.contracts import image_source_id
 
 

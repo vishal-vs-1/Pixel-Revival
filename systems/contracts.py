@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal, Protocol
 
-from game_storage import validate_game_id
+from storage.games import validate_game_id
 from .presentation import SystemPresentation
 
 SystemId = Literal["j2me", "nes"]

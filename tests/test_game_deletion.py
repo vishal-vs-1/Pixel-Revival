@@ -1,4 +1,5 @@
 import io
+import os
 import threading
 import zipfile
 from unittest.mock import Mock
@@ -6,8 +7,8 @@ from unittest.mock import Mock
 import pytest
 from PIL import Image
 
-from engine import Library
-from game_storage import GameStorage
+from systems.jme.library import Library
+from storage.games import GameStorage
 
 
 GAME='a'*64
@@ -75,6 +76,29 @@ def test_empty_game_without_saves_is_removed_without_creating_data(tmp_path):
     assert not workspace.exists()
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows can block a rename when a child file is open')
+def test_delete_keeps_a_locked_save_directory_in_place(tmp_path):
+    storage = GameStorage(tmp_path / 'library', tmp_path / 'rendered', source_filename='game.nes')
+    source, workspace = storage.game_paths(GAME)
+    saves = workspace / 'saves' / 'mesen'
+    saves.mkdir(parents=True)
+    source.mkdir(parents=True)
+    (source / 'game.nes').write_bytes(b'cartridge')
+    (workspace / 'game.json').write_text('{}')
+    (workspace / 'texture.png').write_bytes(b'cache')
+    save = saves / 'progress.sav'
+    save.write_bytes(b'progress')
+
+    with save.open('rb') as locked_save:
+        with pytest.raises(PermissionError):
+            workspace.rename(workspace.with_name('renamed'))
+        assert storage.delete(GAME) == workspace / 'saves'
+        assert locked_save.read() == b'progress'
+        assert list(workspace.iterdir()) == [workspace / 'saves']
+        assert not source.exists()
+    assert save.read_bytes() == b'progress'
+
+
 def test_delete_and_reimport_reuses_save_bytes_and_rebuilds_artwork(tmp_path):
     library=Library(tmp_path/'lib',tmp_path/'rendered')
     source=tmp_path/'test.jar'
@@ -129,8 +153,8 @@ def test_cleanup_failure_restores_original_jar_metadata_and_saves(tmp_path,monke
     (workspace/'texture.png').write_bytes(b'disposable cache')
     real=GameStorage._remove
     def fail_after_partial_cleanup(path,parent):
-        if parent==workspace.parent:
-            (path/'texture.png').unlink()
+        if path==workspace/'texture.png':
+            path.unlink()
             raise OSError('simulated file lock')
         real(path,parent)
     monkeypatch.setattr(GameStorage,'_remove',staticmethod(fail_after_partial_cleanup))

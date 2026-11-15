@@ -2,7 +2,7 @@
 from pathlib import Path
 import sys
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
-from engine import Library
+from systems.jme.library import Library
 library=Library();game=next(g for g in library.games() if 'Bean' in g['name'])
 process,log=library.launch(game,stop_seconds=3,hidden=True)
 try:

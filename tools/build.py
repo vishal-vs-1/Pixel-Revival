@@ -9,7 +9,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM = '3933e75ef927a95eab9f5e065f0b76dabf336069'
 sys.path.insert(0, str(ROOT))
-from engine import locate_java
+from systems.jme.jdk import locate_java
 from patch_emulator import patch
 
 

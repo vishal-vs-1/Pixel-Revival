@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from tools.patch_emulator import copy_common_graphics_java, patch_control_profile_frontend
+from tools.patches.java_me.frontend import patch_control_profile_frontend
+from tools.patches.java_me.sources import copy_common_graphics_java
 
 
 ROOT = Path(__file__).resolve().parents[1]

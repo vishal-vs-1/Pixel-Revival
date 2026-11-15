@@ -1,7 +1,7 @@
 import json,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
-import gpu_policy as gpu
+from graphics import gpu_policy as gpu
 
 class GpuPolicyTests(unittest.TestCase):
     def setUp(self):

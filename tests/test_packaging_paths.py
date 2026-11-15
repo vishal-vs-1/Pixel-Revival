@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class PackagingPathsTests(unittest.TestCase):
     def test_source_checkout_keeps_existing_data_locations(self):
         with patch.object(sys, 'frozen', False, create=True):
-            paths = runpy.run_path(str(ROOT / 'app_paths.py'))
+            paths = runpy.run_path(str(ROOT / 'storage/paths.py'))
         self.assertEqual(paths['RESOURCE_ROOT'], ROOT)
         self.assertEqual(paths['DATA_ROOT'], ROOT)
 
@@ -29,7 +29,11 @@ home = Path(sys.argv[1]).resolve()
 sys.frozen = True
 sys.executable = str(home / 'JAR Revival.exe')
 sys._MEIPASS = str(home / 'app')
-import app_paths, engine, app, gpu_policy, ai_backend
+from storage import paths as app_paths
+from systems.jme import library as engine
+import app
+from graphics import gpu_policy
+from runtime_assets import ai as ai_backend
 from tools import setup_ai
 assert app_paths.APP_ROOT == home
 assert engine.ROOT == home / 'app'
@@ -46,7 +50,7 @@ assert setup_ai.ROOT == ai_backend.ROOT == home / 'data'
 
     def test_ai_install_and_lookup_use_same_data_folder_without_repeat_download(self):
         from tools import setup_ai
-        import ai_backend
+        from runtime_assets import ai as ai_backend
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, 'w') as archive:
             archive.writestr('runtime/realesrgan-ncnn-vulkan.exe', b'fixture executable')

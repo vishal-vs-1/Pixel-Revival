@@ -8,9 +8,10 @@ from unittest.mock import patch
 import zipfile
 from PIL import Image
 
-from asset_decoding import decode_jar, embedded_pngs
-from engine import image_id, runtime_arguments
-from gameloft_resources import layout, unpack
+from systems.jme.resources.decoding import decode_jar, embedded_pngs
+from runtime_assets.contracts import image_source_id as image_id
+from systems.jme.playback import runtime_arguments
+from systems.jme.resources.gameloft import layout, unpack
 
 
 class AssetDecodingTests(unittest.TestCase):
@@ -64,7 +65,7 @@ class AssetDecodingTests(unittest.TestCase):
         payload=self.pack([bytes([129])+lzma.compress(b'A'*100,format=lzma.FORMAT_ALONE)])
         self.assertIsNone(layout('pack',{'pack':payload[:-1]}.__getitem__))
         parts=layout('pack',{'pack':payload}.__getitem__)
-        with patch('gameloft_resources.MAX_BLOCK',20),self.assertRaises(ValueError):
+        with patch('systems.jme.resources.gameloft.MAX_BLOCK',20),self.assertRaises(ValueError):
             list(unpack(parts,{'pack':payload}.__getitem__))
 
     def test_embedded_png_crc_and_unsupported_format(self):
@@ -78,7 +79,7 @@ class AssetDecodingTests(unittest.TestCase):
         self.assertEqual(runtime_arguments('0'*64),[])
         game={'asset_decoding':{'features':{'decoded_rgb_lookup':True}}}
         self.assertEqual(runtime_arguments('0'*64,game),[])
-        from asset_decoding import default_registry
+        from systems.jme.resources.decoding import default_registry
         self.assertEqual([decoder.name for decoder in default_registry().decoders],
                          ['standard-images-v1','embedded-png-v1','gameloft-offset-lzma-v1'])
 

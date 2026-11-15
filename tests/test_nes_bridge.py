@@ -1,30 +1,19 @@
 from pathlib import Path
 
-from tools.patch_mesen import (
-    patch_config_manager,
-    patch_dependency_helper,
-    patch_factory,
-    patch_emu_api,
-    patch_load_rom_helper,
-    patch_main_window,
-    patch_nes_config_view,
-    patch_nes_config_view_model,
-    patch_nes_console_header,
-    patch_nes_console_cpp,
-    patch_program,
-    patch_project,
-    patch_core_project,
-    patch_hd_nes_ppu_cpp,
-    patch_hd_nes_ppu_header,
-    patch_stock_windows_renderer,
-    patch_video_renderer_cpp,
-    patch_video_renderer_header,
-    generate,
-)
+import pytest
+
+from tools.patches.mesen.core import patch_factory, patch_nes_console_header, patch_nes_console_cpp, patch_emu_api
+from tools.patches.mesen.projects import patch_project, patch_core_project
+from tools.patches.mesen.video import patch_hd_nes_ppu_header, patch_hd_nes_ppu_cpp, patch_video_renderer_header, patch_video_renderer_cpp, patch_stock_windows_renderer
+from tools.patches.mesen.startup import patch_program, patch_config_manager, patch_dependency_helper, patch_load_rom_helper
+from tools.patches.mesen.controls import patch_nes_config_view_model, patch_nes_config_view
+from tools.patches.mesen.window import patch_main_window
+from tools.patch_mesen import generate
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MESEN = ROOT / "vendor" / "mesen-ce"
+pytestmark = pytest.mark.skipif(not MESEN.is_dir(), reason="Needs the pinned MesenCE source checkout")
 
 
 def test_mesen_factory_patch_is_opt_in_and_idempotent():
@@ -39,6 +28,16 @@ def test_mesen_factory_patch_is_opt_in_and_idempotent():
     release = patched.split("DllExport void __stdcall Release()", 1)[1]
     assert release.index("_emu->Stop(true)") < release.index("RevivalNesCapture().stop()") < release.index("_emu->Release()")
     assert patch_factory(patched) == patched
+
+
+def test_experimental_host_exports_are_explicitly_opt_in():
+    source = (MESEN / 'InteropDLL' / 'EmuApiWrapper.cpp').read_text(encoding='utf-8')
+    stable = patch_factory(source)
+    experimental = patch_factory(source, inprocess=True)
+    for export in ('SetRevivalSaveFolder', 'SetRevivalNesControls', 'StopRevivalNesCapture'):
+        assert export not in stable
+        assert export in experimental
+    assert patch_factory(experimental, inprocess=True) == experimental
 
 
 def test_mesen_project_patch_wires_the_common_dependency():

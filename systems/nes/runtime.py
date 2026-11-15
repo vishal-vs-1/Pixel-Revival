@@ -19,6 +19,7 @@ from .controls import normalize_nes_bindings
 MAX_SESSION_MANIFEST_BYTES = 65536
 MAX_BUILD_INFO_BYTES = 65536
 TILE_CAPTURE_FEATURE = "nes-tile-capture-rnt1"
+IN_PROCESS_FEATURE = "nes-inprocess-host-v1"
 _ID = re.compile(r"[0-9a-f]{64}\Z")
 _SESSION = re.compile(r"[0-9a-f]{32}\Z")
 

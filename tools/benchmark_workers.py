@@ -6,7 +6,7 @@ import sys
 import time
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from engine import Library
+from systems.jme.library import Library
 l=Library(); game=next(g for g in l.games() if 'Bean' in g['name'])
 sources=sorted((l.workspace(game['id'])/'original-assets').glob('*.png'))[:4]
 run=ROOT/'build'/('worker-benchmark-'+str(time.time_ns()))

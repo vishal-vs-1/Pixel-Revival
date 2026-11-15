@@ -7,8 +7,8 @@ import threading
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from game_storage import GameStorage
-from persistence import atomic_json
+from storage.games import GameStorage
+from storage.atomic import atomic_json
 from systems.contracts import GameRef, NES
 from systems.presentation import SystemPresentation
 from .controls import (
@@ -19,7 +19,7 @@ from .controls import (
     NesProfileResolution,
     resolve_nes_selection,
 )
-from .metadata import new_metadata, validate_metadata
+from .metadata import load_metadata, new_metadata, validate_metadata
 from .rom import NesRomInspector
 
 MAX_METADATA_BYTES = 65536
@@ -35,7 +35,7 @@ class NesLibrary:
     presentation = SystemPresentation("Choose an NES cartridge", (("NES cartridge", "*.nes"),))
 
     def __init__(self, root, *, asset_service, runtime=None, register_artwork=None, inspector=None,
-                 write_metadata=atomic_json, control_profiles=None):
+                 write_metadata=atomic_json, control_profiles=None, playable_assets=None):
         root = Path(root)
         self._storage = GameStorage(root / "library", root / "rendered-games", source_filename="game.nes")
         self._service = asset_service
@@ -44,8 +44,10 @@ class NesLibrary:
         self._inspector = inspector if inspector is not None else NesRomInspector()
         self._write_metadata = write_metadata
         self._control_profiles = control_profiles
+        self.playable_assets = playable_assets
         self._lock = threading.RLock()
         self._deleting = set()
+        self._detecting_players = set()
         self._players = {}
 
     @property
@@ -73,7 +75,7 @@ class NesLibrary:
             raw = stream.read(MAX_METADATA_BYTES + 1)
         if len(raw) > MAX_METADATA_BYTES:
             raise ValueError("NES metadata exceeds 64 KiB.")
-        return validate_metadata(json.loads(raw), identity)
+        return load_metadata(json.loads(raw), identity)
 
     def _status(self, game):
         if self._runtime is None or not self._runtime.available():
@@ -101,6 +103,8 @@ class NesLibrary:
     def _require_idle(self, identity):
         if identity in self._deleting:
             raise RuntimeError("This NES game is being deleted.")
+        if identity in self._detecting_players:
+            raise RuntimeError('Wait for NES player detection to finish.')
         process = self._players.get(identity)
         if process is not None and process.poll() is None:
             raise RuntimeError("Close the NES player before changing or deleting this game.")
@@ -241,6 +245,15 @@ class NesLibrary:
                     NES_DEFAULT_PROFILE, "NES control profile store is unavailable"
                 )
             controls = dict(resolution.profile.bindings)
+            if any(kwargs.get(mode) for mode in ('player_replacement', 'player_recording', 'player_regenerated')):
+                if self.playable_assets is None:
+                    raise RuntimeError('Player-sprite replacement is unavailable.')
+                options = {'record': True} if kwargs.get('player_recording') else {}
+                if kwargs.get('player_regenerated'):
+                    options['regenerated'] = True
+                process, log = self.playable_assets.launch(identity, source, self.workspace(identity), controls, **options)
+                self._players[identity] = process
+                return process, log
             runtime_options = dict(kwargs)
             runtime_options["controls"] = controls
             runtime_options["controls_fallback_reason"] = resolution.reason
@@ -249,6 +262,51 @@ class NesLibrary:
             )
             self._players[identity] = process
             return process, log
+
+    def detect_playable_asset(self, identity, *, state=None, latest=False):
+        with self._lock:
+            self._require_idle(identity)
+            if self.playable_assets is None:
+                raise RuntimeError('Player-sprite replacement is unavailable.')
+            self._read(identity)
+            source, workspace = self._storage.source_path(identity), self.workspace(identity)
+            self._detecting_players.add(identity)
+        try:
+            return self.playable_assets.detect(identity, source, workspace, state=state, latest=latest)
+        finally:
+            with self._lock:
+                self._detecting_players.discard(identity)
+
+    def import_playable_recording(self, identity):
+        with self._lock:
+            self._require_idle(identity)
+            return self.playable_assets.import_recording(identity, self._storage.source_path(identity),
+                                                         self.workspace(identity))
+
+    def save_playable_image(self, identity, image, *, key=None):
+        with self._lock:
+            self._require_idle(identity)
+            if self.playable_assets is None:
+                raise RuntimeError('Player-sprite replacement is unavailable.')
+            self._read(identity)
+            self.playable_assets.save_image(identity, self.workspace(identity), image, key=key)
+
+    def clear_playable_overrides(self, identity):
+        with self._lock:
+            self._require_idle(identity)
+            if self.playable_assets is None:
+                raise RuntimeError('Player-sprite replacement is unavailable.')
+            self._read(identity)
+            self.playable_assets.clear_overrides(identity, self.workspace(identity))
+
+    def regenerate_playable_poses(self, identity):
+        with self._lock:
+            self._require_idle(identity)
+            if self.playable_assets is None:
+                raise RuntimeError('Player-sprite replacement is unavailable.')
+            self._read(identity)
+            return self.playable_assets.regenerate(identity, self._storage.source_path(identity),
+                                                   self.workspace(identity))
 
     def delete_game(self, identity, progress=_quiet, *, timeout=60.0):
         with self._lock:

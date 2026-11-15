@@ -45,10 +45,15 @@ class NesCaptureIntegration:
 
     def admit(self, workspace, store, game, recipe, queue_missing):
         added = self._replay(workspace, store, recipe)
+        queued = added
+        if queue_missing:
+            # Captures already consumed under an older recipe may have no job for this one.
+            queued += sum(store.enqueue(source.source_id, recipe.key) for source in store.list_sources()
+                          if source.origin == "nes-tile-v1")
         # Enhanced capture needs a valid staged pack before Mesen can expose tiles.
         generator = self.pack_generator or NesPackGenerator(workspace)
         generator.ensure_capture_pack(recipe, pack_scale=self.pack_scale)
-        return MigrationReport(added, 0, 0, added, 0, 0)
+        return MigrationReport(added, 0, 0, queued, 0, 0)
 
     def discover(self, workspace, store, recipe):
         return self._replay(workspace, store, recipe)

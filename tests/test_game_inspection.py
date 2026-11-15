@@ -1,6 +1,6 @@
 from pathlib import Path
 import tempfile,unittest,zipfile
-from game_inspection import inspect
+from systems.jme.resources.inspection import inspect
 
 class GameInspectionTests(unittest.TestCase):
     def test_packed_graphics_are_reported_as_partial_evidence(self):

@@ -122,7 +122,7 @@ def test_windows_packager_stages_only_verified_shared_graphics_runtime(tmp_path,
 def test_portable_app_archive_checks_both_shared_renderer_manifests(tmp_path):
     runtime = _tree(tmp_path)
     readme = (
-        "JAR Revival.exe Import Java ME demo Settings Shared GPU Legacy GPU CPU · compatibility "
+        "JAR Revival.exe Import Java ME demo Settings GPUs tab CPU · compatibility "
         "Artwork tab AI setup Prepare data\\tools\\ai"
     )
     archive_path = tmp_path / "portable.zip"

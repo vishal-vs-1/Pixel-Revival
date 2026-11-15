@@ -9,7 +9,7 @@ import zipfile
 
 if not getattr(sys, 'frozen', False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app_paths import DATA_ROOT as ROOT
+from storage.paths import DATA_ROOT as ROOT
 URL = 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip'
 
 

@@ -1,7 +1,7 @@
 from pathlib import Path
 import os,subprocess,sys
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
-from engine import locate_java
+from systems.jme.jdk import locate_java
 classes=ROOT/'build/classes';out=ROOT/'build/input-check';out.mkdir(exist_ok=True)
 classpath=str(classes)+os.pathsep+str(ROOT/'tools/gpu/*')
 subprocess.run([locate_java('javac'),'--release','8','-cp',classpath,'-d',str(classes),str(ROOT/'tests/java/HeldInputCheck.java')],check=True)

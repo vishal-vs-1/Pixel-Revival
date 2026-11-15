@@ -1,8 +1,8 @@
 import pytest
 
-from control_schema import JME_CONTROL_SCHEMA, NES_CONTROL_SCHEMA
-from control_profiles import ControlProfileStore, default_seed
-from persistence import atomic_json
+from controls.schema import JME_CONTROL_SCHEMA, NES_CONTROL_SCHEMA
+from controls.java_me import ControlProfileStore, default_seed
+from storage.atomic import atomic_json
 from systems.nes.controls import NES_ACTION_ORDER, NesControlProfileStore, nes_default_seed
 
 

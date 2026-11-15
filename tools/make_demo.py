@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from engine import locate_java
+from systems.jme.jdk import locate_java
 
 
 def build_demo(classes):

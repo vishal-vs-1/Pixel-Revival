@@ -63,9 +63,9 @@ def test_cpu_backend_still_prepares_small_images_with_one_call(monkeypatch):
 
 
 def test_ai_is_not_selected_by_default_without_a_compatible_device(monkeypatch):
-    import ai_backend
+    from runtime_assets import ai as ai_backend
     monkeypatch.setattr(ai_backend,'executable',lambda:Path('present.exe'))
-    monkeypatch.setattr('gpu_policy.devices',lambda:[])
+    monkeypatch.setattr('graphics.gpu_policy.devices',lambda:[])
     assert not ai_backend.available()
 
 
@@ -109,13 +109,13 @@ def test_guard_can_close_without_terminating_a_healthy_model_process(monkeypatch
 
 
 def test_inference_rechecks_processing_limit_immediately_before_launch(tmp_path,monkeypatch):
-    import ai_backend
+    from runtime_assets import ai as ai_backend
     process=Mock(returncode=0)
     process.communicate.return_value=('','')
     launch=Mock(return_value=process)
     guard=Mock(reason='',peak_extra_bytes=0)
     monkeypatch.setattr(ai_backend.subprocess,'Popen',launch)
-    monkeypatch.setattr('gpu_policy.inference_arguments',lambda:([],None))
+    monkeypatch.setattr('graphics.gpu_policy.inference_arguments',lambda:([],None))
     monkeypatch.setattr('runtime_assets.resources.current_budget',lambda:PreparationBudget(128,524_288,1))
     monkeypatch.setattr('runtime_assets.resources.gpu_memory',lambda device:None)
     monkeypatch.setattr('runtime_assets.resources.ModelMemoryGuard',lambda *args,**kwargs:guard)

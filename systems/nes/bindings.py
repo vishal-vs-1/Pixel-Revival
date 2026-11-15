@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 import sqlite3
 import time
@@ -42,8 +42,8 @@ class NesBindingStore:
     @contextmanager
     def _transaction(self):
         db = self._connect()
-        db.execute("BEGIN IMMEDIATE")
         try:
+            db.execute("BEGIN IMMEDIATE")
             yield db
             db.commit()
         except BaseException:
@@ -94,7 +94,7 @@ class NesBindingStore:
             db.close()
 
     def palette(self, profile_id: str) -> bytes | None:
-        with self._connect() as db:
+        with closing(self._connect()) as db:
             row = db.execute("SELECT rgb FROM palette_profiles WHERE profile_id=?",
                              (profile_id,)).fetchone()
             return None if row is None else bytes(row["rgb"])
@@ -113,7 +113,7 @@ class NesBindingStore:
                        "VALUES (?,?,?)", (profile_id, rgb, time.time()))
 
     def binding(self, binding_id: str) -> TileBinding | None:
-        with self._connect() as db:
+        with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM tile_bindings WHERE binding_id=?",
                              (binding_id,)).fetchone()
             if row is None:
@@ -122,13 +122,13 @@ class NesBindingStore:
                                bool(row["transparency_required"]))
 
     def list_bindings(self) -> list[TileBinding]:
-        with self._connect() as db:
+        with closing(self._connect()) as db:
             rows = db.execute("SELECT * FROM tile_bindings ORDER BY binding_id").fetchall()
             return [TileBinding(row["binding_id"], row["selector"], row["source_id"],
                                 bool(row["transparency_required"])) for row in rows]
 
     def ingested(self, session_id: str, sequence: int, digest: str) -> bool:
-        with self._connect() as db:
+        with closing(self._connect()) as db:
             row = db.execute("SELECT chunk_digest FROM ingested_chunks "
                              "WHERE session_id=? AND sequence=?",
                              (session_id, sequence)).fetchone()

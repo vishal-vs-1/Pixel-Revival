@@ -2,8 +2,8 @@
 from pathlib import Path
 import json,sys
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
-from engine import Library
-from game_inspection import inspect
+from systems.jme.library import Library
+from systems.jme.resources.inspection import inspect
 library=Library()
 for game in library.games():
     report=inspect(library.library/game['id']/'game.jar',game.get('assets'))

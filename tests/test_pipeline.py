@@ -10,12 +10,15 @@ from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
-from engine import Library, ROOT, enhance, image_id, read_manifest
+from systems.jme.library import Library, ROOT
+from runtime_assets.pixel import enhance
+from runtime_assets.contracts import image_source_id as image_id
+from systems.jme.resources.jar import read_manifest
 
 
 class PipelineTests(unittest.TestCase):
     def test_control_compatibility_is_scoped_to_exact_game(self):
-        from engine import runtime_arguments
+        from systems.jme.playback import runtime_arguments
         mrbean='061f71e5ad66befade2c6d2bbcca1e5a76c4cf9a7782f82cd80ab8a1e4cc56d6'
         mib='f88c716e45bdb6d8d8bac9a2da81f70046b8e39670835eb4b9a8fd679a74e9fd'
         self.assertIn('-Djme.compat.repaintOnShow=on',runtime_arguments(mrbean))
@@ -94,8 +97,8 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(spy.call_count,4)
 
     def test_exact_screen_profile_and_manual_override(self):
-        from engine import atomic_json
-        from profiles import PROFILES
+        from storage.atomic import atomic_json
+        from systems.jme.profiles import PROFILES
         with tempfile.TemporaryDirectory(dir=ROOT/'build') as tmp:
             base=Path(tmp); library=Library(base/'lib',base/'rendered')
             identity='061f71e5ad66befade2c6d2bbcca1e5a76c4cf9a7782f82cd80ab8a1e4cc56d6'

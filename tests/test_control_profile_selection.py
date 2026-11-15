@@ -2,8 +2,9 @@ import json
 
 import pytest
 
-from control_profiles import ControlProfileStore, ProfileValidationError, default_seed
-from engine import Library, atomic_json
+from controls.java_me import ControlProfileStore, ProfileValidationError, default_seed
+from systems.jme.library import Library
+from storage.atomic import atomic_json
 
 
 GAME_ID = "a" * 64

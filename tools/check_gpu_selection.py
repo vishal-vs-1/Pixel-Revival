@@ -2,8 +2,8 @@
 from pathlib import Path
 import sys,json
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
-from engine import Library
-from gpu_policy import settings,save_settings,devices,player_java
+from systems.jme.library import Library
+from graphics.gpu_policy import settings,save_settings,devices,player_java
 saved=settings();library=Library();game=next(g for g in library.games() if g['name']=='Revival Demo')
 available=devices();print('Devices:',available)
 try:

@@ -2,7 +2,7 @@
 from pathlib import Path
 import subprocess,sys,json
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
-from engine import locate_java
+from systems.jme.jdk import locate_java
 
 def install():
     target=ROOT/'tools/runtime'
