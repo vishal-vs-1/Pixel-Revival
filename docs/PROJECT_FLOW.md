@@ -4,40 +4,35 @@ Pixel Revival runs two emulators from one Windows library. Both systems share ar
 
 The [experiment history](EXPERIMENTS.md) records the trials and decisions that led to these paths.
 
+## General artwork preparation
+
+Both systems can use Fast Pixel or AI Cartoon to prepare artwork. The worker saves results for the current game and recipe. Each player consumes its own game's results.
+
 ~~~mermaid
 flowchart TD
-    A[Launcher and system switch] --> B[Java ME library and JAR import]
-    A --> C[NES library and ROM import]
-    B --> D[Patched FreeJ2ME-Plus]
-    C --> E[Managed MesenCE]
-    B --> F[Supported resources from the JAR]
-    D --> G[Stable images discovered during play]
-    E --> H[Tile capture during NES Enhanced play]
-    F --> I[Shared source and recipe cache]
-    G --> I
-    H --> I
-    I --> J[Fast Pixel or local AI Cartoon]
-    J --> K[Java ME texture replacement]
-    J --> L[NES pack for a later launch]
-    K --> D
-    L -->|Mesen loads the pack on the next launch| E
-    D --> N[Java ME compatibility presenter]
-    E -->|Composed NES frame| M[Shared GPU presentation]
+    A["General artwork"] -->|Java ME| J["Images from the JAR or gameplay"]
+    A -->|NES| N["Tiles captured during Enhanced play"]
+    J --> JR["Prepare with Fast Pixel or AI Cartoon"]
+    JR --> JC["Cache this game's Java ME textures"]
+    JC --> JP["FreeJ2ME applies ready textures during Enhanced play"]
+    JP --> JD["Java ME GPU or CPU compatibility presenter"]
+    N --> NR["Prepare with Fast Pixel or AI Cartoon after close"]
+    NR --> NP["Build this game's NES HD pack"]
+    NP --> NN["Mesen uses the pack to compose a later Enhanced frame"]
+    NN --> ND["NES shared GPU presenter"]
 ~~~
+
+Original play skips general artwork replacement. Java ME plays at its original artwork scale through its compatibility player. NES uses Mesen's stock presenter.
 
 ## System paths
 
 | Responsibility | Java ME | NES |
 | --- | --- | --- |
 | Import | `systems/jme/library.py` validates and copies a JAR. Recognized image resources are discovered during import. | `systems/nes/library.py` copies a validated cartridge into the NES library and records its hash and mapper metadata. |
-| Playback | `systems/jme/playback.py` starts patched FreeJ2ME-Plus. Java ME offers GPU and CPU compatibility paths. | `systems/nes/runtime.py` starts managed MesenCE with a private launch manifest. Original uses the stock presenter. Enhanced loads a prepared HD pack and uses shared GPU presentation. |
+| Normal playback | `systems/jme/playback.py` starts patched FreeJ2ME-Plus. Java ME offers GPU and CPU compatibility paths. | `systems/nes/runtime.py` starts managed MesenCE with a private launch manifest. Original uses the stock presenter. Enhanced loads a prepared HD pack and uses shared GPU presentation. |
 | Discover artwork | Eligible decoded images can enter the artwork queue while the game runs. | Enhanced observes tiles and palettes during play. The artwork service prepares replacements after the player closes. |
 | Apply artwork | The Java renderer looks up prepared textures by source identity and recipe. | MesenCE draws matching tiles from the staged HD pack while composing the frame. |
 | Controls | The player receives the selected Java ME binding snapshot. | The managed session receives the selected NES binding snapshot. |
-
-## Java ME character artwork
-
-NES and Java ME use the same **Playable sprite** panel in Artwork. **Play & record poses** collects candidate artwork. NES can also detect player poses through a controller replay or scan a checkpoint. In Java ME, open **Review captured artwork**, preview each candidate, and mark **This is a player pose** for the character's frames. Movement suggestions are candidates for review. The default image applies only to confirmed player poses. Individual images take priority until you choose **Use default for all**. Captured terrain, effects, and other artwork stay outside the replacement set unless explicitly selected.
 
 ## How NES artwork reaches the screen
 
@@ -55,7 +50,26 @@ The embedded Mesen host in `systems/nes/embedded/` is a separate experiment. It 
 
 ## Playable sprite replacement
 
+Both systems use the **Playable sprite** panel in Artwork. This feature fits a replacement to a known character pose. **Play with image** uses the uploaded images, and **Play with regenerated poses** uses the separate set made by the offline pose renderer.
+
+~~~mermaid
+flowchart TD
+    N["NES replay detection, checkpoint scan or live recording"] --> P["Player poses for the selected game"]
+    J["Java ME recording of image regions or drawn sprites"] --> C["Review and confirm the player poses"]
+    C --> P
+    P --> U["Assign a default image or an image per pose"]
+    P --> R["Regenerate all poses with the offline renderer"]
+    U --> UP["Play with image"]
+    R --> RP["Play with regenerated poses"]
+    UP --> F["Fit the replacement to the original visible bounds"]
+    RP --> F
+    F -->|NES| NP["Separate Mesen player loads a pose HD pack"]
+    F -->|Java ME| JP["FreeJ2ME substitutes the pose at draw time"]
+~~~
+
 **NES → Artwork → Detect player** runs short, isolated Mesen replays. The detector compares sprite positions under neutral and directional input to find the controllable character. It records each observed pose as a layout of sprite tiles, palettes, and flips. The initial replays are verified for specific cartridge revisions of Super Mario Bros., Donkey Kong, and Road Fighter.
+
+In Java ME, open **Review captured artwork** and mark **This is a player pose** on the character's frames. Movement suggestions help with the review. The default image applies only to confirmed poses. Individual uploads take priority until you choose **Use default for all**. Captured terrain and effects stay outside the replacement set unless explicitly selected.
 
 | Action | Result |
 | --- | --- |
