@@ -34,16 +34,20 @@ can be unbound. NES profiles cover directions, A, B, Start and Select.
 Default uses the selected system's built-in bindings.
 
 GRAPHICS RENDERER
-Java ME GPU playback defaults to Shared GPU · common-v1. Select a game and
-open its GPUs tab to choose Legacy GPU · compatibility instead. This is
-separate from the physical GPU selector. CPU · compatibility remains a
-per-game choice in the Compatibility tab. If the shared renderer cannot
-start, the player continues with Legacy GPU and identifies that fallback in
-the performance label and saved player log. No second game process is started.
+The GPUs tab selects the physical Java ME playback device.
+CPU · compatibility is available per game in the Compatibility tab.
 
-NES Enhanced uses the same shared renderer when a compatible managed NES
+NES Enhanced uses the shared renderer when a compatible managed NES
 runtime is installed. NES Original keeps Mesen's stock renderer for
 comparison. Enhanced artwork may look different without looking better.
+
+CHARACTER ARTWORK
+In the Artwork tab, detect and record player poses for supported NES games.
+For Java ME, use Play & record poses, then review and confirm player poses.
+Choose Regenerate all poses and then Play with regenerated poses for offline
+redrawn art. Choose image and Play with image use your own artwork instead.
+Both options fit replacements to the original pose's visible height.
+Run regeneration again after detecting or confirming more poses.
 
 OPTIONAL AI CARTOON
 The AI runtime and model are not included in this ZIP.

@@ -32,7 +32,16 @@ Choose a style in **Artwork** and click **Prepare** to change it for an imported
 
 Java ME prepares supported resources on import and can discover additional artwork during play. NES Enhanced records tiles as you play and prepares replacements after the game closes. Reopen the game to use the ready pack. Newly encountered tiles can use the original artwork until replacements are ready. Visual results and compatibility vary by game.
 
-Java ME GPU playback requests the shared renderer by default. **GPUs** offers Legacy GPU, and **Compatibility** offers per-game CPU playback. NES Enhanced uses the same shared graphics implementation through the managed NES runtime.
+### Character artwork
+
+In **Artwork**, detect or record poses on supported NES cartridges. For Java ME, use **Play & record poses**, then review and confirm the player poses. NES can also find later forms through **Scan latest** or **Choose save state**.
+
+- **Regenerate all poses** draws the known poses offline with black outlines and stronger colors. Click **Play with regenerated poses** to use the result.
+- **Choose image** assigns an uploaded image to one pose or uses it as the default. Click **Play with image** to use your uploads.
+
+Both playback modes fit each replacement to the pose's original visible height. See [supported replays and current coverage](docs/PROJECT_FLOW.md#playable-sprite-replacement).
+
+Java ME uses its compatibility GPU renderer. **GPUs** selects the playback device, and **Compatibility** offers per-game CPU playback. NES Enhanced uses the shared renderer through the managed NES runtime.
 
 ## Run from source
 
@@ -46,6 +55,8 @@ py -m venv .venv
 ~~~
 
 Follow the [development guide](docs/DEVELOPMENT.md) to build the shared native graphics runtime, set up NES, run checks, or create the portable ZIP. [Project flow](docs/PROJECT_FLOW.md) describes the two emulators and shared pipeline. See also [asset discovery](docs/ASSET_DECODING.md), [performance notes](docs/PERFORMANCE.md), and the [CI workflow](.github/workflows/ci.yml).
+
+See the [experiment history](docs/EXPERIMENTS.md) for what was tried and what the results showed. The detailed local records are indexed in `local-work/README.md` when present.
 
 ## License
 

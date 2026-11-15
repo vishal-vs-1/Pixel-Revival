@@ -12,7 +12,7 @@ Install CMake 3.27+, Visual Studio 2022 C++ x64 build tools with the v143 toolse
 python tools/build_graphics.py --generator 'Visual Studio 17 2022'
 ~~~
 
-This builds the Windows x64 renderer DLL and Java JNI shim, runs the native contracts, and stages the runtime under `build/common-runtime-u22/`. The Java ME launcher can use its Legacy GPU presenter when the shared runtime is unavailable.
+This builds the Windows x64 renderer DLL and Java JNI shim, runs the native contracts, and stages the runtime under `build/common-runtime-u22/`. Java ME uses its compatibility GPU presenter. The shared runtime supports NES Enhanced.
 
 ## Managed NES runtime
 
@@ -40,6 +40,15 @@ python tools/package_windows.py
 ~~~
 
 The ZIP and SHA-256 checksum are written to `build/windows-release/`. The archive includes the Java ME and shared graphics runtimes, the synthetic demo, and the Windows guide. Managed MesenCE and Real-ESRGAN are separate setup steps.
+
+## Source layout
+
+- `app.py` is the desktop entry point. `launcher/` owns Tk layout, catalog and settings views, background operation controls, and playback UI.
+- `systems/jme/` owns the Java ME library, artwork preparation, and JVM launch. `systems/nes/` owns NES pose reconstruction, HD packs, and Mesen launch. The opt-in embedded host has its own package under `systems/nes/embedded/`.
+- `runtime_assets/` separates scheduling, live admission, conversion execution, and result publication. The deterministic sprite painter is also available through `python -m runtime_assets.sprite_paint input.png output.png`.
+- `tools/patches/` separates build-time patches by emulator and subsystem. `emulator-src/` groups Java integration sources by responsibility. The patcher installs them into the Java package expected by the pinned upstream player.
+
+Follow [project flow](PROJECT_FLOW.md) for the active runtime architecture. The ignored `local-work/` tree preserves the detailed designs, retired experiments, and validation history.
 
 ## Checks
 

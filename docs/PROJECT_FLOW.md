@@ -1,6 +1,8 @@
 # Project flow
 
-Pixel Revival runs two emulators from one Windows library. Both systems share artwork preparation and the native GPU presentation implementation for Enhanced play.
+Pixel Revival runs two emulators from one Windows library. Both systems share artwork preparation and use system-specific presentation paths.
+
+The [experiment history](EXPERIMENTS.md) records the trials and decisions that led to these paths.
 
 ~~~mermaid
 flowchart TD
@@ -19,19 +21,23 @@ flowchart TD
     J --> L[NES pack for a later launch]
     K --> D
     L -->|Mesen loads the pack on the next launch| E
-    D --> M[Shared GPU presentation]
-    E -->|Composed NES frame| M
+    D --> N[Java ME compatibility presenter]
+    E -->|Composed NES frame| M[Shared GPU presentation]
 ~~~
 
 ## System paths
 
 | Responsibility | Java ME | NES |
 | --- | --- | --- |
-| Import | `engine.py` validates and copies a JAR. Recognized image resources are discovered during import. | `systems/nes/library.py` copies a validated cartridge into the NES library and records its hash and mapper metadata. |
-| Playback | Patched FreeJ2ME-Plus runs the game. Java ME offers shared GPU, Legacy GPU, and CPU compatibility paths. | A private launch manifest starts managed MesenCE. Original uses the stock presenter. Enhanced loads a prepared HD pack and uses shared GPU presentation. |
+| Import | `systems/jme/library.py` validates and copies a JAR. Recognized image resources are discovered during import. | `systems/nes/library.py` copies a validated cartridge into the NES library and records its hash and mapper metadata. |
+| Playback | `systems/jme/playback.py` starts patched FreeJ2ME-Plus. Java ME offers GPU and CPU compatibility paths. | `systems/nes/runtime.py` starts managed MesenCE with a private launch manifest. Original uses the stock presenter. Enhanced loads a prepared HD pack and uses shared GPU presentation. |
 | Discover artwork | Eligible decoded images can enter the artwork queue while the game runs. | Enhanced observes tiles and palettes during play. The artwork service prepares replacements after the player closes. |
 | Apply artwork | The Java renderer looks up prepared textures by source identity and recipe. | MesenCE draws matching tiles from the staged HD pack while composing the frame. |
 | Controls | The player receives the selected Java ME binding snapshot. | The managed session receives the selected NES binding snapshot. |
+
+## Java ME character artwork
+
+NES and Java ME use the same **Playable sprite** panel in Artwork. **Play & record poses** collects candidate artwork. NES can also detect player poses through a controller replay or scan a checkpoint. In Java ME, open **Review captured artwork**, preview each candidate, and mark **This is a player pose** for the character's frames. Movement suggestions are candidates for review. The default image applies only to confirmed player poses. Individual images take priority until you choose **Use default for all**. Captured terrain, effects, and other artwork stay outside the replacement set unless explicitly selected.
 
 ## How NES artwork reaches the screen
 
@@ -45,12 +51,43 @@ Pixel Revival creates a Mesen HD pack from captured NES tiles. MesenCE reads tha
 
 **Play Original** leaves HD packs disabled and uses Mesen's stock presentation path. The imported ROM remains intact in both modes.
 
+The embedded Mesen host in `systems/nes/embedded/` is a separate experiment. It requires an opt-in runtime build and the `J2ME_REVIVAL_NES_INPROCESS=1` setting. The supported default uses the managed Mesen process. Both routes receive Mesen's composed frame. The current pose feature observes sprite tiles and layout data to build replacement packs.
+
+## Playable sprite replacement
+
+**NES → Artwork → Detect player** runs short, isolated Mesen replays. The detector compares sprite positions under neutral and directional input to find the controllable character. It records each observed pose as a layout of sprite tiles, palettes, and flips. The initial replays are verified for specific cartridge revisions of Super Mario Bros., Donkey Kong, and Road Fighter.
+
+| Action | Result |
+| --- | --- |
+| **Detect player** | Runs a replay from startup and opens the image picker when detection succeeds. |
+| **Choose image** | Assigns an image to the selected pose or sets the default for every unassigned pose. |
+| **Scan latest** | Uses the newest Mesen close checkpoint or save slot for the selected game. It adds newly detected poses and keeps existing assignments. |
+| **Choose save state** | Scans a particular Mesen save slot when you want to capture an earlier moment. |
+| **Play & record poses** | Records new sprite layouts during play and adds them after the player exits. A recorded form stays in the catalog even if the character changes form again. |
+| **Play with image** | Uses uploaded artwork. NES builds a private HD pack with the game's controls and save folders. Java ME uses the existing draw-time replacement hooks. |
+| **Regenerate all poses** | Draws all currently detected NES poses or confirmed Java ME poses offline and saves them as a separate artwork set. |
+| **Play with regenerated poses** | Starts the game using that artwork set and fits each drawing to the original pose's visible height. |
+
+The pack matches the sprite layout at its current position and checks larger layouts first. A pose-specific image takes priority over the default. Replacement artwork matches the original pose's visible height. Wide images are narrowed to fit its width. If the layout or image is missing, Mesen draws the original sprite. The checkpoint flow was verified with Mario's 16×32 powered-up form. The mushroom pickup transition and real ladder play still need verification.
+
+The regenerated set uses black outlines and stronger colors. Uploaded images have their own playback button. Run regeneration again after detecting or confirming more poses. Unmatched poses use the original sprite.
+
+The renderer also accepts standalone sprite PNGs with `python -m runtime_assets.sprite_paint input.png output.png`.
+
+### Computer-controlled enemies
+
+Enemy replacement can reuse the sprite observations, pose previews, image assignments, and HD pack renderer. It needs a detector that tracks tiles moving together across frames and distinguishes enemies from the player, moving platforms, projectiles, and effects. Several enemies can share an identical pose. The current HD pack rules can replace that pose wherever it matches, so targeting one individual would need additional instance information. Enemy detection is a future extension.
+
 ## Shared components
 
-- `app.py` and `systems/application.py` route library operations to the active system. Browsing filters the loaded catalog, and cover preparation runs in the background.
-- `runtime_assets/` validates sources, schedules work, and caches outputs by original pixel identity and artwork recipe. Fast Pixel runs deterministic Scale2x. AI Cartoon uses local Real-ESRGAN through NCNN and Vulkan.
-- `native-graphics/` implements the shared graphics ABI, texture operations, and frame presentation. The Java player reaches it through a JNI shim, and the NES bridge calls it from the managed runtime's native core.
-- `graphics/` validates runtime manifests and launch policy. `emulator-src/` contains the Java integration, and `nes-bridge/` contains the native and managed NES adapter.
-- `game_storage.py` and the system libraries own game data paths. Java ME and NES have separate libraries and control profile files. Each game stores its own profile choice, and deletion keeps saves.
+| Package | Responsibility |
+| --- | --- |
+| `app.py`, `launcher/` | Start the app and bind the library, settings, artwork, and player views. |
+| `systems/application.py`, `systems/jme/`, `systems/nes/` | Route requests by game system. Each system owns imports, pose discovery, and its player launch. |
+| `runtime_assets/` | Schedule conversion, run Scale2x or local Real-ESRGAN, and publish ready artwork by source and recipe. It also contains the standalone pose drawing algorithm. |
+| `systems/generated_poses.py` | Store complete generated pose sets and verify that they match the current pose catalog before play. |
+| `storage/`, `controls/` | Resolve portable paths, retain saves during deletion, and own keyboard profile data. Java ME and NES have separate libraries and profiles. |
+| `graphics/`, `native-graphics/` | Resolve graphics settings and runtime builds. The shared native renderer handles NES Enhanced presentation, and the Java JNI shim is retained for diagnostics. |
+| `emulator-src/`, `nes-bridge/`, `tools/patches/` | Hold the Java integration, native and managed NES bridge, and build-time patches for the pinned upstream sources. |
 
 Both systems retain their imported game files. Enhancements are generated from known original artwork and can be reused across launches. Unsupported or uncaptured artwork follows the original rendering path. See [asset discovery](ASSET_DECODING.md) for details and the [development guide](DEVELOPMENT.md) for the source and test layout.
