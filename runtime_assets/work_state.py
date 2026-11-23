@@ -19,9 +19,12 @@ class _Game:
     generation: int = 0
     dirty_at: float | None = None
     next_scan: float = 0.0
+    next_recover: float = 0.0
+    event_mtime_ns: int = -1
     compat_pending: bool = True
     compat_recipe_key: str = ""
     compat_sources: set[str] | None = None
+    large_sprite_catalogue: bool = False
     player_active: bool = False
     metrics_path: Path | None = None
     live_enabled: bool = True
@@ -40,6 +43,7 @@ class _Game:
     batch_limit: int = 16
     resource_reason: str = ''
     removing: bool = False
+    ready_sample_cursor: int = 0
 
 
 @dataclass(frozen=True)

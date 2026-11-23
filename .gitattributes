@@ -1,5 +1,25 @@
 * text=auto
+
 *.py text eol=lf
 *.java text eol=lf
 *.md text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.rs text eol=lf
+*.lock text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
 *.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.jar binary
+*.nes binary
+*.dll binary
+*.exe binary
+*.zip binary
+*.sqlite binary

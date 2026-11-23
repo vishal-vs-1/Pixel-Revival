@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import subprocess
 import time
+from uuid import uuid4
+from systems.comparison import ComparisonPlayers, comparison_startup_options, copy_playback_files
 from systems.jme.profiles import PROFILES
 from systems.jme.execution_policy import java_execution_arguments
 from storage.paths import RESOURCE_ROOT
@@ -41,12 +43,29 @@ class JavaMePlayback:
                 raise RuntimeError('Close the game before regenerating its player poses.')
             return PoseArtwork(folder).regenerate()
 
-    def launch(self, game, original=False, proof=None, *, stop_seconds=0, hidden=False, pose_mode=None):
+    def launch(self, game, original=False, proof=None, *, stop_seconds=0, hidden=False,
+               pose_mode=None, comparison=False):
         with self.lock:
             self._check_not_deleting(game['id'])
+            if comparison:
+                existing = self._players.get(game['id'])
+                if existing is not None and existing.poll() is None:
+                    raise RuntimeError('Close the current player before comparing this game.')
+                folder = self.workspace(game['id'])
+                root = folder / '.runtime' / 'compare' / uuid4().hex
+                for label in ('original', 'enhanced'):
+                    saves = root / label
+                    saves.mkdir(parents=True)
+                    copy_playback_files(folder / 'saves', saves)
+                pair = ComparisonPlayers(lambda original: self._launch(
+                    dict(game), original, comparison_saves=root / ('original' if original else 'enhanced')),
+                    ready_paths=(root / 'original.ready', root / 'enhanced.ready'))
+                self._players[game['id']] = pair
+                return pair, pair.logs[-1]
             return self._launch(game,original,proof,stop_seconds=stop_seconds,hidden=hidden,pose_mode=pose_mode)
 
-    def _launch(self, game, original=False, proof=None, *, stop_seconds=0, hidden=False, pose_mode=None):
+    def _launch(self, game, original=False, proof=None, *, stop_seconds=0, hidden=False,
+                pose_mode=None, comparison_saves=None):
         if game.get('status') != 'Ready':
             raise RuntimeError('This import has not finished. Import the JAR again to resume.')
         emulator = ROOT / 'build' / 'jme-player.jar'
@@ -68,7 +87,8 @@ class JavaMePlayback:
         args = [java, *java_execution_arguments(game), '-Xmx768m', '-Dfile.encoding=ISO_8859_1', f'-Djme.pack={folder}',
                 f'-Djme.stats={log_path.with_suffix(".stats.json")}',
                 f"-Djme.textures={self.texture_dir(folder,game.get('backend','pixel'))}",
-                f'-Djme.scale={1 if original else render_scale}']
+                f'-Djme.scale={1 if original else render_scale}',
+                f'-Djme.captureArtwork={str(not original and comparison_saves is None).lower()}']
         args += [f'-Djme.gpuPreference={gpu_mode}',f'-Djme.expectedGpu={expected["name"] if expected else ""}']
         args += runtime_arguments(game['id'],game)
         if pose_mode in ('record', 'replace'):
@@ -77,17 +97,27 @@ class JavaMePlayback:
             args.extend(PoseArtwork(folder).launch_arguments(False, regenerated=True))
         if control_profile_arg is not None:
             args.append(control_profile_arg)
+        launch_options = {}
+        if comparison_saves is not None:
+            ready = comparison_saves.with_suffix('.ready')
+            args.append(f'-Djme.comparisonReady={ready}')
+            launch_options = comparison_startup_options()
         if game.get('renderer','gpu')=='gpu':
             if not list((ROOT/'tools/gpu').glob('lwjgl-*.jar')):
                 raise RuntimeError('GPU runtime is missing. Run python tools/setup_gpu.py first.')
+            title = game['name']
+            if comparison_saves is not None:
+                title += ' — Original' if original else ' — Enhanced'
             args += ['--enable-native-access=ALL-UNNAMED','-Djme.graphicsBackend=legacy','-Djme.gpu=true','-cp',str(emulator)+os.pathsep+str(ROOT/'tools/gpu/*'),
-                     'org.recompile.mobile.GpuPlayer',str(playable),str(game['width']),str(game['height']),game['name']]
+                     'org.recompile.mobile.GpuPlayer',str(playable),str(game['width']),str(game['height']),title]
         else:
             args += ['-jar',str(emulator),playable.resolve().as_uri(),'1',str(game['width']),str(game['height']),str(scale)]
         if proof:
             args.insert(1, f'-Djme.proof={Path(proof).resolve()}')
         if stop_seconds:args.insert(1,f'-Djme.stopSeconds={int(stop_seconds)}')
         if hidden:args.insert(1,'-Djme.hidden=true')
+        working_directory = Path(comparison_saves or folder / 'saves')
+        working_directory.mkdir(parents=True, exist_ok=True)
         with log_path.open('w', encoding='utf-8') as log:
             log.write('Startup: '+str(playable)+'\n')
             log.write(game['startup']['note']+'\n')
@@ -97,6 +127,8 @@ class JavaMePlayback:
                 requested=selection if selection in CUSTOM_SLOT_IDS else 'invalid'
                 log.write('Control profile fallback: '+requested+' -> default ('+control_resolution.reason+')\n')
             log.flush()
-            process = subprocess.Popen(args, cwd=folder / 'saves', stdout=log, stderr=subprocess.STDOUT)
-        self._players[game['id']]=process
+            process = subprocess.Popen(args, cwd=working_directory,
+                                       stdout=log, stderr=subprocess.STDOUT, **launch_options)
+        if comparison_saves is None:
+            self._players[game['id']]=process
         return process, log_path

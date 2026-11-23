@@ -13,17 +13,22 @@ from typing import Protocol
 import zipfile
 from PIL import Image
 
+from systems.jme.resources.gameloft_artwork import GameloftSpriteImages
+from systems.jme.resources.png_header import HEADER_BYTES, has_swapped_png_header, restore_png_header
+
 VERSION = 3
 MAX_PIXELS = 4_194_304
 MAX_RESOURCE = 16 * 1024 * 1024
 
 
 class AssetSink:
-    def __init__(self, folder, identity):
+    def __init__(self, folder, identity, fresh_sources):
         self.folder = folder / 'original-assets'
         self.folder.mkdir(parents=True, exist_ok=True)
         self.identity = identity
         self.records = []
+        self.fresh_sources = fresh_sources
+        self.saved_ids = set()
 
     def add(self, image, resource, decoder, **metadata):
         if image.width * image.height > MAX_PIXELS:
@@ -31,10 +36,16 @@ class AssetSink:
         image = image.convert('RGBA')
         key = self.identity(image)
         path = self.folder / (key + '.png')
-        if not path.exists():
+        if key not in self.saved_ids and not path.exists():
             temporary = path.with_suffix('.tmp')
-            image.save(temporary, format='PNG')
-            os.replace(temporary, path)
+            try:
+                image.save(temporary, format='PNG', compress_level=1)
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            if self.fresh_sources is not None:
+                self.fresh_sources[key] = image.size
+        self.saved_ids.add(key)
         self.records.append(dict(resource=resource, image_id=key, width=image.width,
                                  height=image.height, decoder=decoder, **metadata))
         return key
@@ -47,9 +58,10 @@ class DecodeContext:
     archive: zipfile.ZipFile
     sink: AssetSink
     java: str
-    player: Path
+    player: Path | None
     progress: object
     direct: set = field(default_factory=set)
+    recovered: set = field(default_factory=set)
     blocks: list = field(default_factory=list)
     containers: list = field(default_factory=list)
     features: dict = field(default_factory=dict)
@@ -138,6 +150,27 @@ class EmbeddedImages:
                 context.sink.add(image, entry.filename + '@' + str(offset), self.name)
 
 
+class SwappedHeaderImages:
+    name = 'swapped-png-header-v1'
+
+    def supports(self, context):
+        return True
+
+    def decode(self, context):
+        for entry in context.resources():
+            if entry.filename in context.direct:
+                continue
+            with context.archive.open(entry) as resource:
+                header = resource.read(HEADER_BYTES)
+                if not has_swapped_png_header(header):
+                    continue
+                restored = restore_png_header(header + resource.read())
+            candidate = next(embedded_pngs(restored), None)
+            if candidate is not None and candidate[0] == 0:
+                context.sink.add(candidate[1], entry.filename, self.name)
+                context.recovered.add(entry.filename)
+
+
 class GameloftContainers:
     name = 'gameloft-offset-lzma-v1'
     def supports(self, context):
@@ -169,14 +202,16 @@ class GameloftContainers:
 
 
 def default_registry():
-    return DecoderRegistry([StandardImages(), EmbeddedImages(), GameloftContainers()])
+    return DecoderRegistry([StandardImages(), EmbeddedImages(), GameloftContainers(),
+                            SwappedHeaderImages(), GameloftSpriteImages()])
 
 
-def decode_jar(jar, folder, identity, java, player, progress=lambda message: None, registry=None):
+def decode_jar(jar, folder, identity, java=None, player=None, progress=lambda message: None, registry=None,
+               *, fresh_sources=None):
     """The persistent source preparation stage shared by Add and Prepare."""
     jar, folder = Path(jar).resolve(), Path(folder).resolve()
     active_registry=registry or default_registry()
-    registry_names=[decoder.name for decoder in active_registry.decoders]
+    registry_names=[getattr(decoder, 'cache_key', decoder.name) for decoder in active_registry.decoders]
     fingerprint = hashlib.sha256(jar.read_bytes()).hexdigest()
     report_path = folder / 'asset-decoding.json'
     catalogue_path = folder / 'catalogue.json'
@@ -187,32 +222,34 @@ def decode_jar(jar, folder, identity, java, player, progress=lambda message: Non
                 and all((folder/'original-assets'/(row['image_id']+'.png')).is_file() for row in catalogue)):
             progress(f'Reusing {report["unique_images"]} saved source images; decoding is already complete.')
             return report, catalogue
-    sink = AssetSink(folder, identity)
+    sink = AssetSink(folder, identity, fresh_sources)
     with zipfile.ZipFile(jar) as archive:
         entries=archive.infolist()
         if len(entries)>20000 or sum(entry.file_size for entry in entries)>128*1024*1024:
             raise ValueError('Archive exceeds the supported import limit')
-        context = DecodeContext(jar, folder, archive, sink, java, Path(player).resolve(), progress)
+        context = DecodeContext(jar, folder, archive, sink, java,
+                                Path(player).resolve() if player is not None else None, progress)
         progress('Detecting stored image and packed resource formats…')
         selected = active_registry.decode(context)
         packed_names={part.name for _,parts in context.containers for part in parts}
         embedded_names={row['resource'].split('@')[0] for row in sink.records if row['decoder']=='embedded-png-v1'}
         unclassified=[entry.filename for entry in context.resources()
-                      if entry.filename not in context.direct|packed_names|embedded_names
+                      if entry.filename not in context.direct|context.recovered|packed_names|embedded_names
                       and Path(entry.filename).suffix.lower() not in {'.txt','.mid','.midi','.wav','.mp3','.amr','.json','.jad'}]
         pixel_api=any(b'createRGBImage' in context.archive.read(entry) or b'drawRGB' in context.archive.read(entry)
                       for entry in entries if entry.filename.endswith('.class'))
         uncertain=bool(pixel_api and unclassified and not context.containers)
+        recovered = embedded_names | context.recovered
         decision=('packed-assets' if context.containers else 'unresolved-pixel-path' if uncertain
-                  else 'standard-images' if context.direct else 'embedded-images' if embedded_names else 'unknown')
+                  else 'standard-images' if context.direct else 'embedded-images' if recovered else 'unknown')
         report = dict(version=VERSION, registry=registry_names, jar_sha256=fingerprint, decoders=selected,
-                      additional_decoding=True if context.containers or embedded_names else None if uncertain or not context.direct else False,
+                      additional_decoding=True if context.containers or recovered else None if uncertain or not context.direct else False,
                       decision=decision,unclassified_resources=unclassified,generated_pixel_api=pixel_api,
                       unique_images=len({row['image_id'] for row in sink.records}),
                       source_records=len(sink.records), containers=len(context.containers),
                       container_blocks=len(context.blocks),
                       features=context.features, outcomes=context.outcomes,
-                      coverage='recognized image resources and validated container images; unknown formats unverified')
+                      coverage='recognized image resources and packed sprites; unknown formats unverified')
     for path, value in [(catalogue_path,sink.records),(report_path,report)]:
         temporary=path.with_suffix('.tmp')
         temporary.write_text(json.dumps(value,indent=2),encoding='utf-8')

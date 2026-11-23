@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-import tempfile
 import threading
 import time
 
@@ -10,14 +9,6 @@ from PIL import Image
 from runtime_assets.contracts import Recipe, SourceRecord, image_source_id
 from runtime_assets.service import AssetService
 from runtime_assets.store import AssetStore
-
-
-@pytest.fixture
-def tmp_path():
-    parent = Path(__file__).resolve().parents[1] / "build" / "test-runtime-assets"
-    parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="service-", dir=parent) as directory:
-        yield Path(directory)
 
 
 def _recipe():
@@ -83,6 +74,30 @@ def _several_sources(workspace,count=5):
     return [_source(workspace,color=(index*19,90,150,255))[1] for index in range(count)]
 
 
+def test_redraw_worker_batches_tiles_and_releases_its_processes(tmp_path, monkeypatch):
+    from runtime_assets.recipes import ArtworkRecipes
+
+    monkeypatch.setattr("runtime_assets.resources.host_memory",
+                        lambda: {"available_bytes": 1024**3, "logical_cpus": 3})
+    recipes = ArtworkRecipes()
+    recipe, _ = recipes.for_backend("redraw")
+    backend = recipes.backend_for_recipe(recipe)
+    workspace = tmp_path / "redraw-game"
+    sources = _several_sources(workspace)
+    service = AssetService(recipes.backend_for_recipe, poll_seconds=0.02)
+    try:
+        service.register_game(workspace, recipe, game={"id": workspace.name})
+        assert _wait_until(lambda: service.stats(workspace.name)["READY"] == len(sources), 15)
+        assert backend._pool is not None
+        for source in sources:
+            texture = workspace / "textures-cache" / recipe.key / (source.source_id + ".png")
+            with Image.open(texture) as image:
+                assert image.size == (source.width * 4, source.height * 4)
+    finally:
+        service.close(timeout=5)
+    assert backend._pool is None
+
+
 def test_idle_batch_publishes_individual_cache_entries_and_restart_reuses_them(tmp_path):
     workspace=tmp_path/'batch-game';workspace.mkdir()
     sources=_several_sources(workspace)
@@ -103,6 +118,96 @@ def test_idle_batch_publishes_individual_cache_entries_and_restart_reuses_them(t
         service.register_game(workspace,recipe,game={'id':workspace.name})
         assert service.stats(workspace.name)['READY']==len(sources)
         assert restored.batches==[] and restored.calls==[]
+    finally:service.close()
+
+
+def test_registration_reports_saved_counts_before_a_slow_scan(tmp_path, monkeypatch):
+    """The library must not show old numbers while a catalogue is re-indexed."""
+    import runtime_assets.service as service_module
+    from runtime_assets.ingest import MigrationReport
+
+    image, source = _source(tmp_path)
+    recipe = _recipe()
+    store = AssetStore(tmp_path)
+    store.register_recipe(recipe)
+    store.register_source(source)
+    store.enqueue(source.source_id, recipe.key)
+    lease = store.claim_batch("test-owner", recipe_key=recipe.key, max_count=1)[0]
+    output = f"textures-cache/{recipe.key}/{source.source_id}.png"
+    target = store.resolve_path(output)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    image.resize((image.width * recipe.scale, image.height * recipe.scale)).save(target)
+    assert store.mark_ready(lease, output)
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_import(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return MigrationReport(0, 0, 0, 0, 0, 0)
+
+    monkeypatch.setattr(service_module.LegacyCacheImporter, "import_workspace", slow_import)
+    seen = []
+    service = AssetService(lambda selected: FakeBackend([]),
+                           listener=lambda game_id, stats: seen.append(dict(stats)),
+                           poll_seconds=0.02)
+    errors = []
+
+    def register():
+        try:
+            service.register_game(tmp_path, recipe, game={"id": tmp_path.name},
+                                  queue_missing=False)
+        except Exception as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=register)
+    thread.start()
+    try:
+        assert entered.wait(5)
+        assert seen and seen[0]["READY"] == 1 and seen[0]["QUEUED"] == 0
+    finally:
+        release.set()
+        thread.join(5)
+        service.close(timeout=5)
+    assert not errors
+
+
+def test_recovery_reattaches_an_indexed_catalogue_without_rescanning(tmp_path, monkeypatch):
+    import runtime_assets.service as service_module
+
+    _image, source = _source(tmp_path)
+    recipe = _recipe()
+    store = AssetStore(tmp_path)
+    store.register_recipe(recipe)
+    store.register_source(source)
+    store.enqueue(source.source_id, recipe.key)
+    scans = []
+    monkeypatch.setattr(service_module.LegacyCacheImporter, "import_workspace",
+                        lambda *args, **kwargs: scans.append(1))
+    seen = []
+    service = AssetService(lambda selected: FakeBackend([]),
+                           listener=lambda game_id, stats: seen.append(dict(stats)))
+    try:
+        service.register_game(tmp_path, recipe, game={"id": tmp_path.name},
+                              queue_missing=False, recover=True)
+        assert scans == []
+        assert seen and seen[0]["QUEUED"] == 1
+    finally:
+        service.close(timeout=5)
+
+
+def test_threaded_save_pool_keeps_every_batch_output(tmp_path):
+    workspace=tmp_path/'threaded-save';workspace.mkdir()
+    sources=_several_sources(workspace)
+    recipe=_recipe();backend=BatchBackend([])
+    service=AssetService(lambda selected:backend,poll_seconds=0.02,save_workers=7)
+    try:
+        service.register_game(workspace,recipe,game={'id':workspace.name})
+        assert _wait_until(lambda:service.stats(workspace.name)['READY']==len(sources))
+        for source in sources:
+            output=workspace/'textures-cache'/recipe.key/(source.source_id+'.png')
+            with Image.open(output) as image:assert image.size==(source.width*2,source.height*2)
     finally:service.close()
 
 

@@ -24,10 +24,5 @@
       "api-ms-win-crt-runtime-l1-1-0.dll",
       "KERNEL32.dll"
     ]
-  },
-  "nes_runtime": {
-    "repository": "https://github.com/nesdev-org/MesenCE",
-    "commit": "4b8a196e299b3de297b204fd1208d2981562c89b",
-    "dotnet_sdk_major": 10
   }
 }

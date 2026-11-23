@@ -89,6 +89,7 @@ def add_assets():
     copy(ROOT / 'tools/runtime', CONTENTS / 'tools/runtime')
     copy(ROOT / 'tools/gpu', CONTENTS / 'tools/gpu')
     add_common_graphics_runtime()
+    add_rust_nes_player()
     copy(ROOT / 'fixtures/RevivalDemo.jar', CONTENTS / 'fixtures/RevivalDemo.jar')
     copy(ROOT / 'compatibility-src', CONTENTS / 'compatibility-src')
     copy(ROOT / 'LICENSE', CONTENTS / 'LICENSE')
@@ -112,7 +113,7 @@ def add_assets():
 
 
 def add_common_graphics_runtime():
-    """Bundle one verified common renderer without shipping Mesen or game data."""
+    """Bundle one verified common renderer without shipping an emulator or game data."""
     from graphics.jme_runtime import JmeGraphicsRuntimeLocator
     from graphics.runtime_package import validate_runtime_tree
 
@@ -146,6 +147,15 @@ def add_common_graphics_runtime():
         raise RuntimeError('Packaged graphics DLL differs from the verified source runtime.')
 
 
+def add_rust_nes_player():
+    """Bundle the Python-loaded Rust NES library where find_dll expects it."""
+    dll = ROOT / 'build' / 'rust-nes-target' / 'release' / 'mesen_player.dll'
+    copy(dll, CONTENTS / 'build' / 'rust-nes-target' / 'release' / 'mesen_player.dll')
+    readme = ROOT / 'rust-nes' / 'README.md'
+    if readme.is_file():
+        copy(readme, CONTENTS / 'build' / 'rust-nes-target' / 'release' / 'README.md')
+
+
 def verify_archive(archive):
     with zipfile.ZipFile(archive) as zf:
         if zf.testzip():
@@ -163,6 +173,7 @@ def verify_archive(archive):
             'JAR Revival/app/tools/common-runtime/jme/graphics-runtime.json',
             'JAR Revival/app/tools/common-runtime/nes/graphics-runtime.json',
             'JAR Revival/app/tools/common-runtime/source/native-graphics-source.zip',
+            'JAR Revival/app/build/rust-nes-target/release/mesen_player.dll',
             'JAR Revival/app/LICENSE',
             'JAR Revival/app/THIRD-PARTY-LICENSES/Python-LICENSE.txt',
         }

@@ -7,19 +7,17 @@ START HERE
 3. In Java ME mode, click Import Java ME demo or use Add game to import a
    Java ME JAR. Use the Java ME / NES switch to open the NES library.
 4. Select the game in your library, wait for its import to finish, then
-   open the Play tab and click Play enhanced.
+   open the Play tab. Tick Enhance play before Play to use prepared artwork.
 
 The included Revival Demo is synthetic. No commercial game JAR is included.
 Fast pixel is ready immediately and works offline.
 
 NES SETUP
-The ZIP includes the shared graphics runtime. NES playback also needs the
-managed MesenCE build described in docs/DEVELOPMENT.md in the source project.
-Place its complete runtime tree at tools\nes-runtime beside JAR Revival.exe,
-or set J2ME_REVIVAL_NES_RUNTIME_ROOT to its absolute directory before launch.
-Keep the runtime's common and nes folders together. Add a .nes cartridge in
-NES mode and use Play original or Play enhanced. Enhanced records tiles
-during play and prepares replacements after you close the player.
+The ZIP includes our Rust NES player library under
+app\build\rust-nes-target\release. Add a .nes cartridge in NES mode and use
+Play or Enhance play. NES runs inside the app window; no separate emulator
+or runtime folder is needed. Enhanced records tiles during play and prepares
+replacements after you close the player.
 
 KEYBOARD PROFILES
 1. Open Settings to edit up to three profiles for the active system.
@@ -37,17 +35,16 @@ GRAPHICS RENDERER
 The GPUs tab selects the physical Java ME playback device.
 CPU · compatibility is available per game in the Compatibility tab.
 
-NES Enhanced uses the shared renderer when a compatible managed NES
-runtime is installed. NES Original keeps Mesen's stock renderer for
-comparison. Enhanced artwork may look different without looking better.
+NES renders through its own Rust core and window. Enhanced artwork may look
+different without looking better.
 
 CHARACTER ARTWORK
-In the Artwork tab, detect and record player poses for supported NES games.
-For Java ME, use Play & record poses, then review and confirm player poses.
-Choose Regenerate all poses and then Play with regenerated poses for offline
-redrawn art. Choose image and Play with image use your own artwork instead.
-Both options fit replacements to the original pose's visible height.
-Run regeneration again after detecting or confirming more poses.
+Java ME character artwork: use Play & record poses, then review and confirm
+player poses. Choose Regenerate all poses and then Play with regenerated poses
+for offline redrawn art. Choose image and Play with image use your own artwork
+instead. Both options fit replacements to the original pose's visible height.
+Run regeneration again after confirming more poses.
+NES enhancement uses prepared HD tile packs instead of player-pose images.
 
 OPTIONAL AI CARTOON
 The AI runtime and model are not included in this ZIP.
@@ -58,7 +55,7 @@ The AI runtime and model are not included in this ZIP.
 3. Choose AI cartoon in the Artwork style selector.
 4. For a game already in your library, select it and click Prepare.
    For a new game, choose AI cartoon before Add game or Import demo.
-5. Open the Play tab and click Play enhanced.
+5. Open the Play tab, tick Enhance play, and click Play.
 
 AI requires a working Vulkan-capable graphics driver. After setup, AI runs
 locally and works offline. Your games and artwork are not uploaded.
@@ -81,6 +78,7 @@ Python, NumPy, Pillow notices: app\THIRD-PARTY-LICENSES
 Java notices: app\tools\runtime\legal
 Graphics notices: app\tools\gpu
 Shared graphics runtime and source: app\tools\common-runtime
+Rust NES player and build notes: app\build\rust-nes-target\release
 FreeJ2ME notice: inside app\build\jme-player.jar
 
 This is an experimental preview. Compatibility and artwork coverage vary

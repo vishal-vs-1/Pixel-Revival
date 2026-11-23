@@ -1,6 +1,7 @@
 """Validate and register source images and runtime capture events."""
 from __future__ import annotations
 
+import heapq
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -18,7 +19,7 @@ def read_source(path: Path, expected_id: str | None = None) -> Image.Image:
         if width <= 0 or height <= 0 or width * height > 4_194_304:
             raise ValueError("Source image dimensions are outside the supported limit")
         decoded.load()
-        image = decoded.convert("RGBA")
+        image = decoded.copy() if decoded.mode == "RGBA" else decoded.convert("RGBA")
     source_id = image_source_id(image)
     if expected_id is not None and source_id != expected_id:
         raise ValueError("Source pixels do not match their source ID")
@@ -54,7 +55,7 @@ def ingest_events(game: _Game, limit: int) -> int:
     if not event_dir.is_dir():
         return 0
     accepted = 0
-    for event_path in sorted(event_dir.glob("*.json"))[:limit]:
+    for event_path in heapq.nsmallest(limit, event_dir.glob("*.json")):
         try:
             event = json.loads(event_path.read_text(encoding="utf-8"))
             if (not isinstance(event, dict) or event.get("schema") != 1 or

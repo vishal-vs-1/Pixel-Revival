@@ -10,7 +10,7 @@ from PIL import Image
 SAMPLES = 16
 HALF = SAMPLES // 2
 MAX_SIDE = 128
-STYLES = ("ink", "classic")
+STYLES = ("ink", "classic", "fill")
 
 
 def _diagonal_fill(labels, x, y):
@@ -41,7 +41,7 @@ def _diagonal_fill(labels, x, y):
     return None
 
 
-def _paint_geometry(source):
+def _paint_geometry(source, *, repeat_edges=False):
     # Reserve label zero for transparency regardless of the hidden RGB bytes.
     pixels = np.array(source.convert("RGBA"))
     pixels[pixels[:, :, 3] == 0] = 0
@@ -52,7 +52,8 @@ def _paint_geometry(source):
         palette = np.vstack((np.zeros((1, 4), dtype=np.uint8), palette))
         inverse += 1
     # Two bytes per label suffice for every pixel in a 128x128 source.
-    labels = np.pad(inverse.reshape(source.height, source.width).astype(np.uint16), 2)
+    labels = np.pad(inverse.reshape(source.height, source.width).astype(np.uint16), 2,
+                    mode="edge" if repeat_edges else "constant")
     detail = labels.repeat(SAMPLES, axis=0).repeat(SAMPLES, axis=1)
 
     # One fill owns every point, so neighboring shapes share the same edge.
@@ -107,6 +108,8 @@ def _inner_ink(detail, palette, color_counts):
 
 def _paint_colors(detail, palette, color_counts, style):
     art = palette[detail]
+    if style == "fill":
+        return art
     visible = art[:, :, 3] > 0
     broad_fill = visible & (color_counts >= 6)[detail]
     fills = palette[:, :3].astype(np.float32)
@@ -152,13 +155,33 @@ def paint_pose(source: Image.Image, *, scale: int = 4, style: str = "ink") -> Im
         raise ValueError("Artwork scale must be between 2 and 8.")
     if style not in STYLES:
         raise ValueError(f"Choose one of these paint styles: {', '.join(STYLES)}.")
-    detail, palette, counts = _paint_geometry(source)
+    detail, palette, counts = _paint_geometry(source, repeat_edges=style == "fill")
     art = _paint_colors(detail, palette, counts, style)
     pad = 2 * SAMPLES
     art = art[pad:pad + source.height * SAMPLES, pad:pad + source.width * SAMPLES]
     return Image.fromarray(art).resize(
         (source.width * scale, source.height * scale), Image.Resampling.BOX
     )
+
+
+def redraw_asset(source: Image.Image) -> Image.Image:
+    """Trace an asset at 4x, bounding the supersampled working image."""
+    scale = 4
+    halo = 2
+    step = MAX_SIDE - 2 * halo
+    result = Image.new("RGBA", (source.width * scale, source.height * scale))
+    for y in range(0, source.height, step):
+        for x in range(0, source.width, step):
+            right = min(x + step, source.width)
+            bottom = min(y + step, source.height)
+            left_halo, top_halo = max(0, x - halo), max(0, y - halo)
+            # Keep the neighboring pixels needed by the tracer at patch edges.
+            patch = source.crop((left_halo, top_halo, min(source.width, right + halo),
+                                 min(source.height, bottom + halo)))
+            painted = paint_pose(patch, scale=scale, style="fill")
+            box = (x - left_halo, y - top_halo, right - left_halo, bottom - top_halo)
+            result.paste(painted.crop(tuple(value * scale for value in box)), (x * scale, y * scale))
+    return result
 
 
 def main():

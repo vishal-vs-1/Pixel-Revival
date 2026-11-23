@@ -1,0 +1,9 @@
+[package]
+name = "mesen-core"
+description = "Reusable Rust NES emulator core (Mesen 0.9.9 port)"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+authors = ["Mesen Rust port contributors"]
+
+[dependencies]

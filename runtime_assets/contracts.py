@@ -74,10 +74,13 @@ class Recipe:
         if not isinstance(self.settings, Mapping):
             raise TypeError("Recipe settings must be a JSON object")
         frozen = _freeze_json(self.settings)
-        # Validate the complete representation once, so serialization cannot fail later.
-        json.dumps(_thaw_json(frozen), sort_keys=True, separators=(",", ":"),
-                   ensure_ascii=False, allow_nan=False)
         object.__setattr__(self, "settings", frozen)
+        # Validate and cache the complete representation once: canonical JSON
+        # and its key are read repeatedly by the scheduler.
+        canonical = json.dumps(self.document(), sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=False, allow_nan=False)
+        object.__setattr__(self, "_canonical_json", canonical)
+        object.__setattr__(self, "_key", hashlib.sha256(canonical.encode("utf-8")).hexdigest())
 
     def document(self) -> dict:
         return {
@@ -92,12 +95,11 @@ class Recipe:
         }
 
     def canonical_json(self) -> str:
-        return json.dumps(self.document(), sort_keys=True, separators=(",", ":"),
-                          ensure_ascii=False, allow_nan=False)
+        return self._canonical_json
 
     @property
     def key(self) -> str:
-        return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
+        return self._key
 
     @classmethod
     def from_json(cls, raw: str) -> "Recipe":
@@ -130,6 +132,15 @@ def pixel_recipe() -> Recipe:
     )
 
 
+REDRAW_VERSION = "pixel-redraw-fill-v1-4x"
+
+
+def redraw_recipe() -> Recipe:
+    return Recipe(schema=1, algorithm="pixel-redraw", implementation_version=REDRAW_VERSION,
+                  model_digest="", scale=4, alpha_policy="traced-rgba-v1",
+                  border_policy="edge-repeat-two-pixel-halo-v1", settings={"style": "fill"})
+
+
 def ncnn_recipe(model_digest: str, *, legacy_direct: bool = False) -> Recipe:
     """Current single-image NCNN recipe; device selection is deliberately excluded."""
     if not isinstance(model_digest, str) or not SOURCE_ID_PATTERN.fullmatch(model_digest):
@@ -154,7 +165,8 @@ def image_source_id(image: Image.Image) -> str:
     width, height = image.size
     if width <= 0 or height <= 0 or width * height > MAX_SOURCE_PIXELS:
         raise ValueError("Source image dimensions are outside the supported limit")
-    pixels = np.asarray(image.convert("RGBA"), dtype=np.uint8).copy()
+    rgba = image if image.mode == "RGBA" else image.convert("RGBA")
+    pixels = np.asarray(rgba, dtype=np.uint8).copy()
     pixels[pixels[:, :, 3] == 0, :3] = 0
     return hashlib.sha256(struct.pack(">II", width, height) + pixels.tobytes()).hexdigest()
 
@@ -167,6 +179,7 @@ class SourceKind:
     DERIVED = "derived"
     LEGACY_ORIGINAL = "legacy-original"
     LEGACY_CAPTURE = "legacy-capture"
+    PACKED_OFFLINE = "packed-offline"
 
 
 @dataclass(frozen=True)

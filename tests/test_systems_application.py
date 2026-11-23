@@ -91,7 +91,7 @@ def test_import_request_survives_another_system_view_and_is_immutable(tmp_path):
         GameRef(NES, NES_ID).id = JAVA_ID
 
 
-def test_app_queue_snapshots_the_path_style_and_system(tmp_path, monkeypatch):
+def test_app_queue_defaults_to_redraw_independent_of_artwork_selection(tmp_path, monkeypatch):
     app = App.__new__(App)
     app.busy = True
     app.pending_imports = deque()
@@ -111,7 +111,7 @@ def test_app_queue_snapshots_the_path_style_and_system(tmp_path, monkeypatch):
     app.busy = False
     app.start_pending()
 
-    assert app.library.import_game.call_args.args[0] == ImportRequest(JAVA_ME, source, "pixel")
+    assert app.library.import_game.call_args.args[0] == ImportRequest(JAVA_ME, source, "redraw")
     imported_kind, imported=app.messages.get_nowait()
     idle_kind, idle=app.messages.get_nowait()
     assert imported_kind=="imported" and imported.ref==GameRef(JAVA_ME,game["id"])
@@ -183,7 +183,7 @@ def test_startup_recovery_reuses_service_and_keeps_legacy_metadata(tmp_path, mon
     library.recover_assets(errors.append)
     create_service.assert_called_once()
     service.register_game.assert_called_once_with(
-        active, recipe, game=good, ai_recipe=None, queue_missing=False)
+        active, recipe, game=good, ai_recipe=None, queue_missing=False, recover=False)
     assert len(errors) == 1 and "does not belong" in errors[0]
     assert library.games(JAVA_ME) == [{**good, "system": JAVA_ME}]
     assert (active / "game.json").read_bytes() == original

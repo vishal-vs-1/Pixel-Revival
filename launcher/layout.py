@@ -7,9 +7,8 @@ from launcher.widgets import ScrollableFrame, TabNavigation, LibraryRowActions
 from launcher.palette import capture_widget_colors, java_color
 from systems.contracts import NES
 from systems.jme.pose_artwork_ui import JavaPlayableArtwork
-from systems.nes.playable_artwork_ui import NesPlayableArtwork
 from launcher.playable_artwork_ui import PlayableArtworkPanel
-from launcher.labels import GPU_CHOICES, SYSTEM_LABELS
+from launcher.labels import GPU_CHOICES, SYSTEM_LABELS, ARTWORK_LABELS
 
 
 def build_window(self, root, java_library):
@@ -169,22 +168,26 @@ def build_window(self, root, java_library):
     self.play_view_note=tk.StringVar(value='All artwork scales together. Width follows height; proportions stay intact.')
     tk.Label(play_panel,textvariable=self.play_view_note,bg=self.panel,fg='#7994ac',font=('Segoe UI',8),anchor='w',wraplength=420).pack(fill='x')
     actions=tk.Frame(play_panel,bg=self.panel);actions.pack(fill='x',pady=(14,10))
-    self.play_button=ttk.Button(actions,text='▶  Play enhanced',style='Accent.TButton',command=self.play);self.play_button.pack(side='left',fill='x',expand=True,padx=(0,8))
-    self.compare_button=ttk.Button(actions,text='Compare original',command=lambda:self.play(True))
-    self.compare_button.pack(side='left')
+    self.play_button=ttk.Button(actions,text='Play',style='Accent.TButton',command=self.play);self.play_button.pack(side='left',fill='x',expand=True,padx=(0,8))
+    self.enhance_play = tk.BooleanVar(master=root, value=False)
+    self.enhance_checkbox = ttk.Checkbutton(actions, text='Enhance play', variable=self.enhance_play)
+    self.enhance_checkbox.pack(side='left')
+    self.compare_play_button = ttk.Button(play_panel, text='Compare side by side',
+                                          command=self.play_comparison)
+    self.compare_play_button.pack(anchor='w', pady=(0, 8))
     self.metrics=tk.StringVar(value='Live performance appears while a game is running.')
     tk.Label(play_panel,textvariable=self.metrics,bg=self.panel,fg='#9db7cc',font=('Segoe UI',9),anchor='w',wraplength=420).pack(fill='x',pady=(0,8))
     tk.Label(art_panel,text='Artwork is prepared in batches when you are not playing. During play, small jobs wait for performance headroom. Saved results are reused.',bg=self.panel,fg='#9db7cc',font=('Segoe UI',9),justify='left',anchor='w',wraplength=420).pack(fill='x',pady=(5,14))
     options=tk.Frame(art_panel,bg=self.panel);options.pack(fill='x',pady=(6,0))
     tk.Label(options,text='ARTWORK STYLE',bg=self.panel,fg='#7994ac',font=('Segoe UI',8,'bold')).pack(anchor='w',pady=(0,5))
     convert=tk.Frame(options,bg=self.panel);convert.pack(fill='x')
-    from runtime_assets.ai import available
-    self.backend=ttk.Combobox(convert,values=['Fast pixel','AI cartoon'],state='readonly',width=12)
-    self.backend.set('AI cartoon' if available() else 'Fast pixel');self.backend.pack(side='left',padx=(0,8))
+    self.backend=ttk.Combobox(convert,values=tuple(ARTWORK_LABELS.values()),state='readonly',width=21)
+    self.backend.set(ARTWORK_LABELS['redraw']);self.backend.pack(side='left',padx=(0,8))
     ttk.Button(convert,text='Prepare',command=self.prepare_style).pack(side='right')
     links=tk.Frame(art_panel,bg=self.panel);links.pack(fill='x',pady=(14,0))
+    # NES uses the Rust player with HD packs, not player-pose replacement.
     self.playable_artwork = PlayableArtworkPanel(
-        art_panel, self, NesPlayableArtwork(self, self.nes_library), JavaPlayableArtwork(self, java_library))
+        art_panel, self, None, JavaPlayableArtwork(self, java_library), pack_before=links)
     self.playable_artwork.pack(fill='x', before=links, pady=(14, 0))
     ttk.Button(links,text='Saved files & logs',command=self.open_folder).pack(side='left',padx=(0,8))
     ttk.Button(links,text='AI setup',command=self.install_ai).pack(side='left')

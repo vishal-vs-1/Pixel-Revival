@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from hashlib import sha256
+import heapq
 import os
 from pathlib import Path
 import re
@@ -76,7 +77,7 @@ def committed_chunks(workspace, limit=4):
                 raise ValueError("NES capture inbox has too many entries")
             if _NAME.fullmatch(entry.name):
                 pending.append(entry.name)
-    return [folder / name for name in sorted(pending)[:limit]]
+    return [folder / name for name in heapq.nsmallest(limit, pending)]
 
 
 def quarantine(path):

@@ -10,6 +10,7 @@ from .presentation import SystemPresentation
 SystemId = Literal["j2me", "nes"]
 JAVA_ME: SystemId = "j2me"
 NES: SystemId = "nes"
+DEFAULT_IMPORT_BACKEND = "redraw"
 
 
 def validate_system(system: str) -> SystemId:
@@ -40,11 +41,11 @@ class GameRef:
 class ImportRequest:
     system: SystemId
     path: Path
-    artwork_backend: str
+    artwork_backend: str = DEFAULT_IMPORT_BACKEND
 
     def __post_init__(self):
         validate_system(self.system)
-        if self.artwork_backend not in ("pixel", "ai"):
+        if self.artwork_backend not in ("pixel", "ai", "redraw"):
             raise ValueError(f"Unknown artwork backend: {self.artwork_backend!r}")
         if self.path == "":
             raise ValueError("Choose a game file.")

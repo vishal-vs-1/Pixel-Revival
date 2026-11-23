@@ -8,7 +8,7 @@ import sqlite3
 import time
 import uuid
 
-from runtime_assets.contracts import Recipe, SourceRecord
+from runtime_assets.contracts import Recipe, SourceKind, SourceRecord
 
 SCHEMA_VERSION = 1
 STATES = frozenset({"QUEUED", "RUNNING", "DEFERRED", "READY", "FAILED"})
@@ -36,6 +36,15 @@ class JobRecord:
     error: str | None
 
 
+@dataclass(frozen=True)
+class ReadyOutput:
+    """One READY job plus the source size needed to validate its file."""
+    source_id: str
+    relative_output: str | None
+    width: int | None
+    height: int | None
+
+
 class AssetStore:
     """Short, atomic SQLite transactions. Expensive file/model work stays outside."""
 
@@ -52,6 +61,14 @@ class AssetStore:
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
         db.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
+        # WAL-safe speed settings: NORMAL still survives process crashes and
+        # only risks the last transaction on power loss. The open/read pattern
+        # is short-lived connections, so keep the cache small and temp tables
+        # in memory rather than on disk.
+        db.execute("PRAGMA synchronous=NORMAL")
+        db.execute("PRAGMA cache_size=-65536")
+        db.execute("PRAGMA temp_store=MEMORY")
+        db.execute("PRAGMA mmap_size=67108864")
         return db
 
     @contextmanager
@@ -201,28 +218,54 @@ class AssetStore:
             return [SourceRecord(row["source_id"], row["width"], row["height"],
                                  row["relative_path"], row["origin"]) for row in rows]
 
-    def register_source(self, source: SourceRecord, *, now: float | None = None):
+    def _register_source_in_transaction(self, db, source, timestamp):
         if not isinstance(source, SourceRecord):
             raise TypeError("Expected a validated SourceRecord")
         relative = self._relative_path(source.relative_path)
+        current = db.execute("SELECT width,height FROM sources WHERE source_id=?",
+                             (source.source_id,)).fetchone()
+        if current is not None and (current["width"], current["height"]) != (
+                source.width, source.height):
+            raise ValueError("A source ID was registered with conflicting dimensions")
+        db.execute("""INSERT OR IGNORE INTO sources
+                   (source_id,width,height,relative_path,origin,created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                   (source.source_id, source.width, source.height, relative, source.origin, timestamp))
+
+    def register_source(self, source: SourceRecord, *, now: float | None = None):
         timestamp = time.time() if now is None else float(now)
-        db = self._write()
-        try:
-            current = db.execute("SELECT width,height,relative_path FROM sources WHERE source_id=?",
-                                 (source.source_id,)).fetchone()
-            if current is not None and (current["width"], current["height"]) != (
-                    source.width, source.height):
-                raise ValueError("A source ID was registered with conflicting dimensions")
-            db.execute("""INSERT OR IGNORE INTO sources
-                       (source_id,width,height,relative_path,origin,created_at)
-                       VALUES (?,?,?,?,?,?)""",
-                       (source.source_id, source.width, source.height, relative, source.origin, timestamp))
-            db.commit()
-        except BaseException:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+        with self._transaction() as db:
+            self._register_source_in_transaction(db, source, timestamp)
+
+    def classify_packed_sources(self, source_ids):
+        """Mark older offline rows while retaining gameplay capture provenance."""
+        with self._transaction() as db:
+            db.executemany("UPDATE sources SET origin=? WHERE source_id=? AND origin=?",
+                           ((SourceKind.PACKED_OFFLINE, source_id, SourceKind.LEGACY_ORIGINAL)
+                            for source_id in source_ids))
+
+    def register_import_batch(self, sources, recipe_key: str, priority: int,
+                              *, queue_missing: bool, hold_packed: bool = False) -> int:
+        """Index validated PNGs and queue work without overwriting a newly ready job."""
+        queued = 0
+        timestamp = time.time()
+        with self._transaction() as db:
+            for source in sources:
+                self._register_source_in_transaction(db, source, timestamp)
+                if not queue_missing:
+                    continue
+                if hold_packed and source.origin == SourceKind.PACKED_OFFLINE:
+                    origin = db.execute("SELECT origin FROM sources WHERE source_id=?",
+                                        (source.source_id,)).fetchone()["origin"]
+                    if origin == SourceKind.PACKED_OFFLINE:
+                        continue
+                ready = db.execute("""SELECT 1 FROM jobs
+                    WHERE source_id=? AND recipe_key=? AND state='READY' AND relative_output IS NOT NULL""",
+                                   (source.source_id, recipe_key)).fetchone()
+                if ready is None:
+                    queued += self._enqueue_in_transaction(db, source.source_id, recipe_key,
+                                                           priority, timestamp, True)
+        return queued
 
     def _enqueue_in_transaction(self, db, source_id, recipe_key, priority, timestamp, force):
         if db.execute("SELECT 1 FROM sources WHERE source_id=?", (source_id,)).fetchone() is None:
@@ -291,7 +334,10 @@ class AssetStore:
                        (source_id,width,height,relative_path,origin,created_at)
                        VALUES (?,?,?,?,?,?)""",
                        (source.source_id, source.width, source.height, relative, source.origin, timestamp))
-            added = self._enqueue_in_transaction(db, source.source_id, recipe.key, priority, timestamp, False)
+            observed = db.execute("UPDATE sources SET origin=? WHERE source_id=? AND origin=?",
+                                  (source.origin, source.source_id, SourceKind.PACKED_OFFLINE)).rowcount
+            added = self._enqueue_in_transaction(db, source.source_id, recipe.key,
+                                                 max(priority, 1) if observed else priority, timestamp, False)
             db.execute("INSERT INTO consumed_events(event_id,consumed_at) VALUES (?,?)", (event_id, timestamp))
             db.commit()
             return added
@@ -351,16 +397,36 @@ class AssetStore:
                               row["priority"], row["attempts"], row["next_attempt_at"],
                               row["relative_output"], row["error"]) for row in rows]
 
-    def counts(self, recipe_key: str | None = None) -> dict[str, int]:
+    def list_ready_details(self, recipe_key: str) -> list[ReadyOutput]:
+        """Ready outputs joined to their source size, so publishing needs no per-row lookups."""
+        with self._read() as db:
+            rows = db.execute("""SELECT j.source_id, j.relative_output, s.width, s.height
+                                 FROM jobs j LEFT JOIN sources s USING(source_id)
+                                 WHERE j.recipe_key=? AND j.state='READY'
+                                 ORDER BY j.source_id""", (recipe_key,)).fetchall()
+            return [ReadyOutput(row["source_id"], row["relative_output"],
+                                row["width"], row["height"]) for row in rows]
+
+    def counts(self, recipe_key: str | None = None, *, hold_packed: bool = False) -> dict[str, int]:
         with self._read() as db:
             if recipe_key is None:
                 rows = db.execute("SELECT state,count(*) AS amount FROM jobs GROUP BY state").fetchall()
+            elif hold_packed:
+                rows = db.execute("""SELECT j.state,count(*) AS amount FROM jobs j JOIN sources s
+                                  USING(source_id) WHERE j.recipe_key=? AND
+                                  (s.origin!=? OR j.state IN ('READY','RUNNING')) GROUP BY j.state""",
+                                  (recipe_key, SourceKind.PACKED_OFFLINE)).fetchall()
             else:
                 rows = db.execute("SELECT state,count(*) AS amount FROM jobs WHERE recipe_key=? GROUP BY state",
                                   (recipe_key,)).fetchall()
             result = {state: 0 for state in STATES}
             result.update({row["state"]: row["amount"] for row in rows})
             result["sources"] = db.execute("SELECT count(*) FROM sources").fetchone()[0]
+            if hold_packed and recipe_key is not None:
+                result["on_demand"] = db.execute("""SELECT count(*) FROM sources s WHERE s.origin=?
+                    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.source_id=s.source_id AND
+                                    j.recipe_key=? AND j.state IN ('READY','RUNNING'))""",
+                                                (SourceKind.PACKED_OFFLINE, recipe_key)).fetchone()[0]
             return result
 
     def invalidate_ready(self, source_id: str, recipe_key: str, *, now: float | None = None) -> bool:
@@ -392,7 +458,8 @@ class AssetStore:
 
     def claim_batch(self, owner: str, *, now: float | None = None,
                     lease_seconds: float = 60.0, recipe_key: str | None = None,
-                    max_count: int = 16, max_pixels: int | None = None) -> list[JobLease]:
+                    max_count: int = 16, max_pixels: int | None = None,
+                    hold_packed: bool = False) -> list[JobLease]:
         """Atomically lease a bounded group; skipped jobs retain state and attempt count."""
         if not owner or len(owner) > 128:
             raise ValueError("Worker owner must be a short non-empty ID")
@@ -419,6 +486,9 @@ class AssetStore:
             if recipe_key is not None:
                 condition += " AND j.recipe_key=?"
                 parameters.append(recipe_key)
+            if hold_packed:
+                condition += " AND s.origin!=?"
+                parameters.append(SourceKind.PACKED_OFFLINE)
             parameters.append(max_count * 4)
             rows = db.execute("""SELECT j.*,s.width,s.height FROM jobs j
                               JOIN sources s ON s.source_id=j.source_id WHERE """ + condition +
@@ -498,6 +568,33 @@ class AssetStore:
                                  lease.owner, lease.token, timestamp))
             return cursor.rowcount == 1
 
+    def mark_ready_batch(self, entries, *, now: float | None = None) -> int:
+        """Mark many finished jobs ready in one transaction; one fsync per batch."""
+        timestamp = time.time() if now is None else float(now)
+        prepared = []
+        for lease, relative_output in entries:
+            try:
+                relative = self._relative_path(relative_output)
+                if not self.resolve_path(relative).is_file():
+                    continue
+            except (OSError, ValueError):
+                continue
+            prepared.append((relative, lease))
+        if not prepared:
+            return 0
+        marked = 0
+        with self._transaction() as db:
+            for relative, lease in prepared:
+                cursor = db.execute("""UPDATE jobs SET state='READY',next_attempt_at=NULL,
+                                   lease_owner=NULL,lease_token=NULL,lease_until=NULL,
+                                   relative_output=?,error=NULL,updated_at=?
+                                   WHERE source_id=? AND recipe_key=? AND state='RUNNING'
+                                     AND lease_owner=? AND lease_token=? AND lease_until>?""",
+                                    (relative, timestamp, lease.source_id, lease.recipe_key,
+                                     lease.owner, lease.token, timestamp))
+                marked += int(cursor.rowcount == 1)
+        return marked
+
     def mark_failed(self, lease: JobLease, error: str, *, retry_at: float | None,
                     now: float | None = None) -> bool:
         timestamp = time.time() if now is None else float(now)
@@ -527,8 +624,13 @@ class AssetStore:
         with self._read() as db:
             return db.execute("SELECT count(*) FROM jobs WHERE state IN ('QUEUED','RUNNING','DEFERRED')").fetchone()[0]
 
-    def has_waiting(self,recipe_key: str) -> bool:
+    def has_waiting(self, recipe_key: str, *, hold_packed: bool = False) -> bool:
         with self._read() as db:
+            if hold_packed:
+                return db.execute("""SELECT 1 FROM jobs j JOIN sources s USING(source_id)
+                                     WHERE j.recipe_key=? AND j.state IN ('QUEUED','DEFERRED')
+                                     AND s.origin!=? LIMIT 1""",
+                                  (recipe_key, SourceKind.PACKED_OFFLINE)).fetchone() is not None
             return db.execute("SELECT 1 FROM jobs WHERE recipe_key=? AND state IN ('QUEUED','DEFERRED') LIMIT 1",
                               (recipe_key,)).fetchone() is not None
 

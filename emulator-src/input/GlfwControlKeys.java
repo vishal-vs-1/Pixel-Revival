@@ -32,6 +32,13 @@ public final class GlfwControlKeys {
 
     public static String tokenForKey(int key) { return TOKENS.get(key); }
 
+    public static int keyForToken(String token) {
+        for (Map.Entry<Integer, String> entry : TOKENS.entrySet()) {
+            if (entry.getValue().equals(token)) return entry.getKey();
+        }
+        return GLFW_KEY_UNKNOWN;
+    }
+
     /** Default retains every historical alias; custom input accepts only saved keys. */
     public static IntUnaryOperator mapping(ControlProfileBindings profile) {
         if (profile == null || !profile.isCustom()) return DesktopKeyMap::toPhone;

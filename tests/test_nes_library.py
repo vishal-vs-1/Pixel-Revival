@@ -39,7 +39,7 @@ def test_import_reimport_and_delete_keep_rom_identity_and_saves(tmp_path):
     stored = root / "library" / identity / "game.nes"
     assert stored.read_bytes() == original.read_bytes()
     assert library.games() == [game] and game["runtime_status"] == "setup-needed"
-    with pytest.raises(RuntimeError, match="Set up"):
+    with pytest.raises(RuntimeError, match="Build the Rust NES player"):
         library.launch(game)
     workspace = library.workspace(identity)
     save = workspace / "saves" / "mesen" / "battery"
@@ -192,6 +192,44 @@ def test_unrelated_delete_can_finish_while_first_waits(tmp_path):
     assert library.games() == []
 
 
+def test_asset_summary_reads_the_current_pack_without_a_live_event(tmp_path):
+    from PIL import Image
+    from runtime_assets.contracts import SourceRecord, image_source_id, pixel_recipe
+    from runtime_assets.store import AssetStore
+
+    library = NesLibrary(tmp_path / "nes", asset_service=Mock())
+    identity = "a" * 64
+    workspace = library.workspace(identity)
+    (workspace / "original-assets").mkdir(parents=True)
+    image = Image.new("RGBA", (8, 8), "red")
+    key = image_source_id(image)
+    image.save(workspace / "original-assets" / f"{key}.png")
+    store = AssetStore(workspace)
+    recipe = pixel_recipe()
+    store.register_recipe(recipe)
+    store.register_source(SourceRecord(key, 8, 8, f"original-assets/{key}.png", "imported"))
+    store.enqueue(key, recipe.key)
+    lease = store.claim_batch("test", recipe_key=recipe.key, max_count=1)[0]
+    output = f"textures-cache/{recipe.key}/{key}.png"
+    target = store.resolve_path(output)
+    target.parent.mkdir(parents=True)
+    image.save(target)
+    assert store.mark_ready(lease, output)
+    generation = "b" * 32
+    pack = workspace / "nes" / "packs" / generation
+    pack.mkdir(parents=True)
+    (pack / "manifest.json").write_text(json.dumps({"tiles": [1, 2, 3], "pack_scale": 4}), encoding="utf-8")
+    write_json(workspace / ".runtime" / "nes-pack.json", {
+        "schema": 1, "generation": generation, "pack_scale": 4,
+        "manifest": f"nes/packs/{generation}/manifest.json",
+        "recipe_key": recipe.key, "background_priority": 2,
+    })
+    assert library.asset_summary({"id": identity}) == {
+        "sources": 1, "ready": 1, "waiting": 0, "failed": 0,
+        "pack_tiles": 3, "pack_scale": 4,
+    }
+
+
 def test_injected_runtime_keeps_running_game_protected(tmp_path):
     runtime = Mock()
     runtime.available.return_value = True
@@ -205,6 +243,48 @@ def test_injected_runtime_keeps_running_game_protected(tmp_path):
     assert runtime.launch.call_args.args[1].name == "game.nes"
     with pytest.raises(RuntimeError, match="Close the NES player"):
         library.delete_game(game["id"])
+
+
+def test_play_and_comparison_use_the_rust_runtime(tmp_path):
+    play = Mock()
+    play.available.return_value = True
+    play.supports_in_tool_comparison = True
+    play_process = Mock()
+    play_process.poll.return_value = None
+    play.launch.return_value = (play_process, tmp_path / "play.log")
+    compare_process = Mock()
+    compare_process.poll.return_value = None
+    play.launch_comparison.return_value = (compare_process, tmp_path / "compare.log")
+    library = NesLibrary(tmp_path / "nes", asset_service=Mock(), runtime=play)
+    game = add(library, source(tmp_path))
+    library.launch(game, comparison=True, host_parent=Mock())
+    play.launch_comparison.assert_called_once()
+    play.launch.assert_not_called()
+    compare_process.poll.return_value = 0
+    library.launch(game, original=True, host_parent=Mock())
+    play.launch.assert_called_once()
+
+
+def test_in_tool_comparison_and_capture_use_the_same_rust_player(tmp_path):
+    play = Mock()
+    play.available.return_value = True
+    play.capture_available.return_value = True
+    play.supports_in_tool_comparison = True
+    pair = Mock()
+    pair.poll.return_value = None
+    play.launch_comparison.return_value = (pair, tmp_path / "compare.log")
+    play_process = Mock()
+    play_process.poll.return_value = None
+    play.launch.return_value = (play_process, tmp_path / "play.log")
+    library = NesLibrary(tmp_path / "nes", asset_service=Mock(), runtime=play)
+    game = add(library, source(tmp_path))
+
+    library.launch(game, comparison=True, host_parent=Mock())
+    play.launch_comparison.assert_called_once()
+    pair.poll.return_value = 0  # close the pair before the next launch
+
+    library.launch(game, original=False, capture=True, host_parent=Mock())
+    play.launch.assert_called_once()
 
 
 def test_control_selection_accepts_saved_slots_and_default_alias_without_blocking_player(tmp_path):

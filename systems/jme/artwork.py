@@ -3,18 +3,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from PIL import Image
 from runtime_assets.pixel import enhance
 from storage.atomic import atomic_json
-from storage.paths import RESOURCE_ROOT
-from runtime_assets.contracts import image_source_id as image_id
-from systems.jme.jdk import locate_java
+from runtime_assets.contracts import REDRAW_VERSION, image_source_id as image_id
 
-ROOT = RESOURCE_ROOT
 RECIPE = 'scale2x-rgba-v1-4x'
+RECIPE_LABELS = {'pixel': RECIPE, 'ai': 'realesrgan-anime-alpha-v1-4x', 'redraw': REDRAW_VERSION}
 MAX_PIXELS = 4_194_304
+_ASSET_KEY = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class JavaMeArtwork:
@@ -22,15 +22,18 @@ class JavaMeArtwork:
         return self._artwork_recipes.for_backend(backend)
 
     def texture_dir(self, folder, backend):
-        return folder / ('textures-ai' if backend == 'ai' else 'textures')
+        return folder / {"ai": "textures-ai", "redraw": "textures-redraw"}.get(backend, "textures")
 
     def prepare_ui_assets(self, folder):
         """Smooth bitmap text without asking a neural model to redraw individual letters."""
         catalogue=json.loads((folder/'catalogue.json').read_text(encoding='utf-8'))
         for item in catalogue:
+            image_id = item.get('image_id')
+            if not isinstance(image_id, str) or _ASSET_KEY.fullmatch(image_id) is None:
+                continue
             resource=item['resource'].replace('\\','/').lower()
             if 'font' not in resource:continue
-            source=folder/'original-assets'/(item['image_id']+'.png')
+            source=folder/'original-assets'/(image_id+'.png')
             target=folder/'textures-ui'/source.name
             if target.exists():continue
             target.parent.mkdir(parents=True,exist_ok=True)
@@ -39,6 +42,8 @@ class JavaMeArtwork:
                 result.save(target)
 
     def prepare_asset(self, folder, key, image, backend='pixel'):
+        if not isinstance(key, str) or _ASSET_KEY.fullmatch(key) is None:
+            raise ValueError('Artwork key must be a 64-character lowercase hash.')
         target = self.texture_dir(folder, backend) / (key + '.png')
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
@@ -48,7 +53,11 @@ class JavaMeArtwork:
             shutil.copy2(ui,target);return True
         if not (folder / 'original-assets' / (key + '.png')).exists():
             image.save(folder / 'original-assets' / (key + '.png'))
-        enhanced = enhance(image)
+        if backend == 'redraw':
+            from runtime_assets.sprite_paint import redraw_asset
+            enhanced = redraw_asset(image)
+        else:
+            enhanced = enhance(image)
         if backend == 'ai':
             from runtime_assets.ai import upscale
             enhanced = upscale(image, folder, enhanced.getchannel('A'))
@@ -95,7 +104,8 @@ class JavaMeArtwork:
         folder = self.workspace(game['id'])
         with self.lock:
             self._check_not_deleting(game['id'])
-            self.decode_assets(game, progress)
+            fresh_sources = {}
+            self.decode_assets(game, progress, fresh_sources=fresh_sources)
             self.prepare_ui_assets(folder)
             self.record_decoding_coverage(game)
             current=json.loads((folder/'game.json').read_text(encoding='utf-8'))
@@ -105,7 +115,7 @@ class JavaMeArtwork:
             for key in ('decoded_assets', 'decoded_scope', 'decoded_packs_reached',
                         'decoded_packs_total', 'runtime_assets'):
                 current.pop(key, None)
-            current.update(backend=backend, recipe=RECIPE if backend=='pixel' else 'realesrgan-anime-alpha-v1-4x')
+            current.update(backend=backend, recipe=RECIPE_LABELS[backend])
             for key in ('assets','asset_decoding'):
                 if key in game:current[key]=game[key]
             recipe, ai_recipe = self.recipe_for_backend(backend)
@@ -116,17 +126,18 @@ class JavaMeArtwork:
                 current.pop('model_digest', None)
             self.save(current)
             self.asset_service.register_game(folder, recipe, game=migration_game,
-                                             ai_recipe=ai_recipe)
+                                             ai_recipe=ai_recipe, progress=progress,
+                                             fresh_sources=fresh_sources)
             current['asset_work'] = self.asset_service.stats(game['id'])
             self.save(current)
             progress('Artwork work was queued. The game is ready to play while conversion continues.')
             return current
 
-    def decode_assets(self, game, progress=lambda msg: None):
+    def decode_assets(self, game, progress=lambda msg: None, *, fresh_sources=None):
         from systems.jme.resources.decoding import decode_jar
         folder=self.workspace(game['id'])
-        report,catalogue=decode_jar(self.library/game['id']/'game.jar',folder,image_id,
-                                    locate_java(),ROOT/'build/jme-player.jar',progress)
+        report,catalogue=decode_jar(self.library/game['id']/'game.jar',folder,image_id,progress=progress,
+                                    fresh_sources=fresh_sources)
         game['asset_decoding']=report
         game['assets']=report['unique_images']
         return report,catalogue

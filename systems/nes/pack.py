@@ -12,7 +12,7 @@ import shutil
 import uuid
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageChops
 
 from runtime_assets.contracts import Recipe
 from runtime_assets.store import AssetStore
@@ -21,6 +21,7 @@ from .bindings import NesBindingStore
 
 MAX_PAGE_SIDE = 2048
 DEFAULT_MAX_BYTES = 64 * 1024 * 1024
+PRIORITY_SAFE_PACK = 2
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,7 @@ def _selector_tag(selector: str) -> str:
 
 
 class NesPackGenerator:
-    """Build a Mesen pack from ready shared-worker outputs."""
+    """Build a Mesen-compatible HD pack from ready shared-worker outputs."""
 
     def __init__(self, workspace: Path, *, max_bytes: int = DEFAULT_MAX_BYTES):
         self.workspace = Path(workspace).resolve()
@@ -92,6 +93,7 @@ class NesPackGenerator:
             generation = pointer["generation"]
             expected_relative = f"nes/packs/{generation}/manifest.json"
             if (pointer.get("schema") != 1 or pointer.get("recipe_key") != recipe.key or
+                    pointer.get("background_priority") != PRIORITY_SAFE_PACK or
                     pointer.get("pack_scale") != pack_scale or
                     pointer.get("manifest") != expected_relative or
                     not isinstance(generation, str) or len(generation) != 32 or
@@ -131,9 +133,7 @@ class NesPackGenerator:
             "bindings": [{"binding_id": binding_id, "selector": selector,
                           "source_id": source_id}],
         }
-        generation = hashlib.sha256(
-            json.dumps(seed, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()[:32]
+        generation = self._generation_id(seed)
         target = self._packs / generation
         manifest_path = target / "manifest.json"
         if target.exists():
@@ -181,6 +181,7 @@ class NesPackGenerator:
         try:
             pointer_temp.write_text(json.dumps({
                 "schema": 1, "generation": pack.generation,
+                "background_priority": PRIORITY_SAFE_PACK,
                 "manifest": f"nes/packs/{pack.generation}/manifest.json",
                 "recipe_key": recipe.key, "pack_scale": pack.pack_scale,
             }, sort_keys=True, separators=(",", ":")), encoding="utf-8")
@@ -193,6 +194,10 @@ class NesPackGenerator:
         bindings = NesBindingStore(self.workspace).list_bindings()
         entries = []
         for binding in bindings:
+            background = binding.binding_id.endswith("|background")
+            if background and not binding.transparency_required:
+                # Older captures flattened color zero. Native rendering is safe until recapture.
+                continue
             job = jobs.get(binding.source_id)
             if job is None or not job.relative_output:
                 continue
@@ -201,6 +206,17 @@ class NesPackGenerator:
                 with Image.open(path) as opened:
                     opened.load()
                     image = _pack_image(opened, recipe, pack_scale)
+                if background:
+                    source = store.get_source(binding.source_id)
+                    if source is None:
+                        continue
+                    with Image.open(store.resolve_path(source.relative_path)) as original:
+                        if original.size != (8, 8):
+                            continue
+                        mask = original.convert("RGBA").getchannel("A")
+                    # A scaler can add opacity to an originally transparent background pixel.
+                    mask = mask.resize(image.size, Image.Resampling.NEAREST)
+                    image.putalpha(ImageChops.darker(image.getchannel("A"), mask))
             except (OSError, ValueError):
                 continue
             entries.append((binding, image))
@@ -219,6 +235,14 @@ class NesPackGenerator:
             ],
         }
 
+    @staticmethod
+    def _generation_id(seed):
+        # The Rust loader expects the fixed manifest schema. Version only the cache.
+        cache_seed = dict(seed, background_priority=PRIORITY_SAFE_PACK)
+        return hashlib.sha256(
+            json.dumps(cache_seed, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:32]
+
     def publish(self, store: AssetStore, recipe: Recipe, *, pack_scale: int = 4) -> PackGeneration | None:
         if pack_scale not in (2, 4):
             raise ValueError("NES pack scale must be 2 or 4")
@@ -226,13 +250,14 @@ class NesPackGenerator:
         if not entries:
             return None
         seed = self._manifest_seed(recipe, pack_scale, entries)
-        generation = hashlib.sha256(
-            json.dumps(seed, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()[:32]
+        generation = self._generation_id(seed)
         target = self._packs / generation
         manifest_path = target / "manifest.json"
         if manifest_path.is_file():
-            return PackGeneration(generation, target, manifest_path, pack_scale, len(entries))
+            pack = PackGeneration(generation, target, manifest_path, pack_scale, len(entries))
+            if self._current_generation(recipe, pack_scale) != pack:
+                self._publish_pointer(pack, recipe)
+            return pack
         staging = self._packs / f".staging-{uuid.uuid4().hex}"
         staging.mkdir(parents=True, exist_ok=False)
         try:
@@ -274,16 +299,10 @@ class NesPackGenerator:
                 raise ValueError("NES pack exceeds the configured byte limit")
             self._packs.mkdir(parents=True, exist_ok=True)
             os.replace(staging, target)
-            self._pointer.parent.mkdir(parents=True, exist_ok=True)
-            pointer_temp = self._pointer.with_name(self._pointer.name + f".{uuid.uuid4().hex}.tmp")
-            pointer_temp.write_text(json.dumps({
-                "schema": 1, "generation": generation,
-                "manifest": f"nes/packs/{generation}/manifest.json",
-                "recipe_key": recipe.key, "pack_scale": pack_scale,
-            }, sort_keys=True, separators=(",", ":")), encoding="utf-8")
-            os.replace(pointer_temp, self._pointer)
-            return PackGeneration(generation, target, target / "manifest.json",
+            pack = PackGeneration(generation, target, target / "manifest.json",
                                   pack_scale, len(entries))
+            self._publish_pointer(pack, recipe)
+            return pack
         except BaseException:
             shutil.rmtree(staging, ignore_errors=True)
             raise

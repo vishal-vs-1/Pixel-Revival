@@ -24,6 +24,7 @@ final class CaptureWriter {
     private static final long MAX_RETAINED_BYTES = 32L * 1024L * 1024L;
     private static final long MAX_PIXELS = 4_194_304L;
 
+    private final boolean enabled = Boolean.parseBoolean(System.getProperty("jme.captureArtwork", "true"));
     private final Path pack = new File(System.getProperty("jme.pack", ".")).toPath().toAbsolutePath().normalize();
     private final ArrayBlockingQueue<Request> queue = new ArrayBlockingQueue<Request>(MAX_QUEUE);
     private final AtomicLong retainedBytes = new AtomicLong();
@@ -59,7 +60,7 @@ final class CaptureWriter {
 
     /** Reserve queue capacity and retained bytes before copying mutable pixels. */
     Reservation reserveSnapshot(ImageObservation observation) {
-        if (closing || observation == null ||
+        if (!enabled || closing || observation == null ||
                 !CaptureAdmission.pixelsWithin(observation.getWidth(), observation.getHeight(), MAX_PIXELS)) return null;
         while (true) {
             int current = outstanding.get();

@@ -11,6 +11,7 @@ MODES=('auto','dedicated','integrated','system')
 DEFAULTS={'render_gpu':'auto','enhance_gpu':'auto'}
 _lock=threading.RLock()
 _inventory=None
+_expected={}
 
 def settings():
     try:
@@ -27,6 +28,7 @@ def save_settings(**changes):
         SETTINGS.parent.mkdir(parents=True,exist_ok=True)
         temp=SETTINGS.with_name('settings.'+uuid.uuid4().hex+'.tmp')
         temp.write_text(json.dumps(value,indent=2),encoding='utf-8');os.replace(temp,SETTINGS)
+        _expected.clear()
         return value
 
 def devices(refresh=False):
@@ -34,6 +36,7 @@ def devices(refresh=False):
     global _inventory
     with _lock:
         if _inventory is not None and not refresh:return list(_inventory)
+        if refresh:_expected.clear()
         if os.name!='nt':return []
         class App(C.Structure):
             _fields_=[('sType',C.c_uint32),('pNext',C.c_void_p),('name',C.c_char_p),('version',C.c_uint32),('engine',C.c_char_p),('engineVersion',C.c_uint32),('api',C.c_uint32)]
@@ -113,5 +116,9 @@ def player_java(mode):
     return str(executable)
 
 def expected_device(mode):
-    try:return choose_device(mode)
+    """Expected device for display only; the first Vulkan enumeration costs seconds."""
+    try:
+        if mode not in _expected:
+            _expected[mode]=choose_device(mode)
+        return _expected[mode]
     except (OSError,RuntimeError):return None

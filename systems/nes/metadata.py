@@ -9,6 +9,8 @@ from .rom import NesRomInfo, nes_game_id
 
 SCHEMA = 1
 RUNTIME_STATUSES = ("setup-needed", "not-probed", "ready", "unsupported")
+# One NES display default for metadata, capture integration, and playback.
+DEFAULT_RENDER_SCALE = 2
 _LEGACY_ARTWORK_BACKENDS = {"xbrz", "hqx", "ai_pixel"}
 
 
@@ -31,7 +33,7 @@ def new_metadata(info: NesRomInfo, filename: str, backend: str,
     return validate_metadata({
         "schema": SCHEMA, "system": NES, "id": info.id, "name": Path(filename).stem,
         "source_sha256": info.source_sha256, "original_filename": filename,
-        "backend": backend, "render_scale": 2, "width": 256, "height": 240,
+        "backend": backend, "render_scale": DEFAULT_RENDER_SCALE, "width": 256, "height": 240,
         "aspect": "4:3", "palette_profile": None, "runtime_status": runtime_status,
         "capture_policy": "disabled", "nes": details,
     })
@@ -51,7 +53,7 @@ def validate_metadata(game: dict, expected_id: str | None = None) -> dict:
     if (not isinstance(filename, str) or not filename
             or any(char in filename for char in "/\\:\0") or filename in (".", "..")):
         raise ValueError("Invalid NES original filename.")
-    if (game.get("backend") not in ("pixel", "ai") or game.get("render_scale") not in (2, 4)
+    if (game.get("backend") not in ("pixel", "ai", "redraw") or game.get("render_scale") not in (2, 4)
             or (game.get("width"), game.get("height")) != (256, 240)
             or game.get("aspect") not in ("4:3", "16:15")
             or game.get("runtime_status") not in RUNTIME_STATUSES

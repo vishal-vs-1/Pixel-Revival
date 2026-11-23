@@ -217,4 +217,35 @@ def patch_frontend(SOURCE):
     text = frontend.read_text(encoding='utf-8')
     text = text.replace('Mobile.getPlatform().getLcdFrontbuffer().getCanvas()', 'org.recompile.mobile.Enhancement.surface(Mobile.getPlatform().getLcdFrontbuffer())')
     text = patch_control_profile_frontend(text)
+    text = patch_comparison_frontend(text)
     frontend.write_text(text, encoding='utf-8')
+
+
+def patch_comparison_frontend(text):
+    if 'ComparisonInput.start(' in text:
+        return text
+    text = _replace_exactly_once(text,
+        'import org.recompile.mobile.AwtControlProfileInput;\n',
+        'import org.recompile.mobile.AwtControlProfileInput;\nimport org.recompile.mobile.ComparisonInput;\n',
+        'comparison input import')
+    for method in ('keyPressed', 'keyReleased'):
+        anchor = '\t\t\tpublic void ' + method + '(KeyEvent e)\n\t\t\t{\n'
+        text = _replace_exactly_once(text, anchor,
+            anchor + '\t\t\t\tif(ComparisonInput.enabled()) { return; }\n',
+            'comparison keyboard ownership')
+    anchor = '\t\t\tMobile.getPlatform().runJar();\n'
+    text = _replace_exactly_once(text, anchor, anchor + '''
+\t\t\tComparisonInput.start((token, pressed) -> javax.swing.SwingUtilities.invokeLater(() -> {
+\t\t\t\tKeyEvent event = ComparisonInput.awtEvent(lcd, token, pressed);
+\t\t\t\tif(event == null) { return; }
+\t\t\t\tif(pressed) {
+\t\t\t\t\tif(jmeControlProfileInput.isCustom()) { jmeControlProfileInput.keyPressed(event); }
+\t\t\t\t\telse { pressKey(event, false); }
+\t\t\t\t} else {
+\t\t\t\t\tif(jmeControlProfileInput.isCustom()) { jmeControlProfileInput.keyReleased(event); }
+\t\t\t\t\telse { releaseKey(event); }
+\t\t\t\t}
+\t\t\t}));
+''', 'comparison input after game load')
+    return text.replace('jmeControlProfileInput.releaseHeldKeys();',
+                        'if(!ComparisonInput.enabled()) { jmeControlProfileInput.releaseHeldKeys(); }')

@@ -3,7 +3,8 @@
 from tkinter import messagebox
 from launcher.preview import load_java_preview
 from systems.contracts import GameRef, NES
-from launcher.labels import SYSTEM_LABELS
+from systems.nes.metadata import DEFAULT_RENDER_SCALE
+from launcher.labels import SYSTEM_LABELS, ARTWORK_LABELS
 
 
 class LauncherCatalog:
@@ -14,16 +15,12 @@ class LauncherCatalog:
             self.nes_compat_frame.pack(fill='both',expand=True)
             self.desktop_fit_label.grid_remove()
             self.aspect_combo.grid(row=1,column=1,sticky='ew',padx=(12,0),pady=(5,0))
-            self.compare_button.configure(text='Play original')
-            self.compare_button.pack(side='left')
-            self.play_view_note.set('Enhanced mode captures NES tiles on first play and prepares them after you close the game. Original mode stays available.')
+            self.play_view_note.set('Enhance play uses cached artwork and records tiles and player poses for processing after close.')
         else:
             self.nes_compat_frame.pack_forget()
             self.jme_compat_frame.pack(fill='both',expand=True)
             self.aspect_combo.grid_remove()
             self.desktop_fit_label.grid(row=1,column=1,sticky='ew',padx=(12,0),pady=(5,0))
-            self.compare_button.configure(text='Compare original')
-            self.compare_button.pack(side='left')
             self.play_view_note.set('All artwork scales together. Width follows height; proportions stay intact.')
 
     def _refresh_system_presentation(self):
@@ -103,7 +100,8 @@ class LauncherCatalog:
             self.metrics.set('Select a game to play.')
             self.handling_info.set('Game handling analysis appears after selection.')
             self.play_button.configure(state='disabled')
-            self.compare_button.configure(state='disabled')
+            self.compare_play_button.configure(state='disabled')
+            self.enhance_checkbox.configure(state='disabled')
             self.nes_cartridge_info.set('Select a cartridge to see its mapper and format.')
             self.nes_runtime_info.set('The NES player has not been set up.')
         self._refresh_control_profile_controls(self.game_if_selected())
@@ -167,7 +165,7 @@ class LauncherCatalog:
             self.startup_info.set(('Verified MobileRated / HOVR repair available. Original JAR is preserved.'
                 if supported else 'No verified wrapper repair for this file. Original startup is retained.')+
                 ('\nNext launch skips promotional startup screens.' if supported and self.remove_wrappers.get() else ''))
-            self.backend.set('AI cartoon' if game.get('backend')=='ai' else 'Fast pixel')
+            self.backend.set(ARTWORK_LABELS.get(game.get('backend'), ARTWORK_LABELS['pixel']))
             self.detail_title.set(game['name'])
             self.detail_subtitle.set(f"{game.get('vendor','Java ME')}  ·  Desktop height · Original proportions")
             inspection=game.get('graphics_inspection',{})
@@ -185,8 +183,9 @@ class LauncherCatalog:
                       if decoding.get('decision') in ('unknown','unresolved-pixel-path') else labels.get(strategy,strategy))
             self.handling_info.set('HANDLING: '+handling+'\nFull gameplay coverage is not verified.')
             partial=inspection.get('packed_graphics_likely',False) or decoding.get('decision') in ('unknown','unresolved-pixel-path')
-            self.play_button.configure(text='▶  Play enhanced',state='normal')
-            self.compare_button.configure(state='normal')
+            self.play_button.configure(text='Play',state='normal')
+            self.compare_play_button.configure(state='normal')
+            self.enhance_checkbox.configure(state='normal')
             self.compat.set(('Coverage is partial · additional artwork may appear after the game decodes it' if partial else
                              'Prepared sources and runtime-discovered artwork share one cache. Gameplay coverage is not yet measured.')+
                             '\nCompatibility: '+game.get('compatibility','not verified for all gameplay'))
@@ -242,9 +241,11 @@ class LauncherCatalog:
         if work:
             active=work.get('RUNNING',0)
             failed=work.get('FAILED',0)
+            on_demand=work.get('on_demand',0)
+            deferred_note=f' · {on_demand:,} on demand' if on_demand else ''
             live=work.get('live_reason') if work.get('player_active') else None
             self.cache_info.set(f'{count} enhanced · {waiting} waiting · {active} active'+
-                                (f' · {failed} need attention' if failed else ''))
+                                (f' · {failed} need attention' if failed else '')+deferred_note)
             self.preparation_info.set(f'Artwork: {count} ready · {waiting} waiting · {active} active'+
                 (f' · {failed} failed' if failed else '')+(f'\nLive artwork: {live}' if live else '')+
                 (f"\n{work['resource_reason']}" if work.get('resource_reason') else ''))
@@ -252,7 +253,7 @@ class LauncherCatalog:
             self.cache_info.set('Saved artwork details are loading.' if self._preview_request
                                 else 'Saved artwork details are unavailable.')
         else:
-            style='AI cartoon' if game.get('backend')=='ai' else 'Fast pixel'
+            style=ARTWORK_LABELS.get(game.get('backend'), ARTWORK_LABELS['pixel'])
             self.cache_info.set(f'{count} enhanced image'+('s' if count!=1 else '')+f' saved  ·  {style}')
         sources=work.get('sources',game.get('assets',0))
         status=f'{sources} SOURCES' if sources else 'READY TO PLAY'
@@ -263,9 +264,9 @@ class LauncherCatalog:
     def _show_nes_game(self,game):
         """Render cartridge facts without reading Java ME-only metadata."""
         self.playable_artwork.refresh(game)
-        self.quality.set('Detailed · 4×' if game.get('render_scale',2)==4 else 'Balanced · 2×')
+        self.quality.set('Detailed · 4×' if game.get('render_scale',DEFAULT_RENDER_SCALE)==4 else 'Balanced · 2×')
         self.aspect.set(game.get('aspect','4:3'))
-        self.backend.set('AI cartoon' if game.get('backend')=='ai' else 'Fast pixel')
+        self.backend.set(ARTWORK_LABELS.get(game.get('backend'), ARTWORK_LABELS['pixel']))
         self.detail_title.set(game['name'])
         self.detail_subtitle.set('Nintendo Entertainment System · Native 256 × 240 · Aspect-preserving desktop view')
         details=game.get('nes',{})
@@ -276,28 +277,33 @@ class LauncherCatalog:
         )
         runtime_status=game.get('runtime_status','setup-needed')
         if runtime_status=='setup-needed':
-            self.nes_runtime_info.set('NES player setup is required. Import and saved settings are available; playback stays disabled until a compatible player is installed.')
-            self.cover_status.set('CARTRIDGE SAVED · PLAYER MISSING')
-            self.play_button.configure(text='NES player setup required',state='disabled')
-            self.compare_button.configure(state='disabled')
+            self.nes_runtime_info.set('The Rust NES player is not built. Import and saved settings are available; playback stays disabled until rust-nes/mesen-player is built.')
+            self.cover_status.set('CARTRIDGE SAVED · PLAYER NOT BUILT')
+            self.play_button.configure(text='Build the Rust NES player',state='disabled')
+            self.compare_play_button.configure(state='disabled')
+            self.enhance_checkbox.configure(state='disabled')
         elif runtime_status=='unsupported':
             self.nes_runtime_info.set('The NES runtime reports that this cartridge is unsupported.')
             self.cover_status.set('CARTRIDGE UNSUPPORTED')
             self.play_button.configure(text='Cartridge unsupported',state='disabled')
-            self.compare_button.configure(state='disabled')
+            self.compare_play_button.configure(state='disabled')
+            self.enhance_checkbox.configure(state='disabled')
         else:
-            self.compare_button.configure(text='Play original',state='normal')
             if self.library.enhanced_available(NES):
-                self.nes_runtime_info.set('NES player available. Enhanced capture is opt-in and artwork preparation waits until the game closes.')
+                self.enhance_checkbox.configure(state='normal')
+                self.nes_runtime_info.set('NES plays in this window on the Rust core. Enhanced uses the prepared pack; new tiles are recorded while you play Enhanced.')
                 self.cover_status.set('ORIGINAL & ENHANCED AVAILABLE')
-                self.play_button.configure(text='▶  Play enhanced',state='normal')
+                self.play_button.configure(text='Play',state='normal')
+                self.compare_play_button.configure(state='normal')
             else:
-                self.nes_runtime_info.set('Original playback is available, but this player build cannot capture NES tiles for enhancement.')
+                self.nes_runtime_info.set('Original playback is available, but this Rust player build cannot capture NES tiles for enhancement.')
                 self.cover_status.set('ORIGINAL AVAILABLE · CAPTURE BUILD NEEDED')
-                self.play_button.configure(text='Enhanced capture unavailable',state='disabled')
+                self.enhance_checkbox.configure(state='disabled')
+                self.play_button.configure(text='Play',state='normal')
+                self.compare_play_button.configure(state='disabled')
         self._show_nes_artwork(game)
         self.compat.set('Original gameplay remains available. Enhanced mode uses the same mapper and controls, with saved tile replacements when ready. Full-game coverage is not verified.')
-        self.handling_info.set('NES tiles are captured during an explicit Enhanced session. The shared artwork worker prepares them after play; results are cached per cartridge.')
+        self.handling_info.set('NES plays and composites Enhanced frames in this window. Tiles seen during Enhanced play prepare replacements for later launches; results are cached per cartridge.')
         self.metrics.set('NES performance details are not available from this runtime yet.')
         self._preview_key=None
         self._preview_request=None
@@ -305,12 +311,25 @@ class LauncherCatalog:
 
     def _show_nes_artwork(self, game):
         work=game.get('asset_work',{})
-        if work:
-            sources=work.get('sources',0)
-            ready=work.get('READY',0)
-            waiting=work.get('QUEUED',0)+work.get('DEFERRED',0)+work.get('RUNNING',0)
-            failed=work.get('FAILED',0)
-            self.cache_info.set(f'{sources} captured tiles · {ready} enhanced · {waiting} waiting'+
-                                (f' · {failed} failed' if failed else ''))
+        summary=None
+        if not work:
+            try:
+                summary=self.library.asset_summary(game)
+            except (OSError, RuntimeError, ValueError, KeyError):
+                summary=None
+        if work or (summary and (summary['sources'] or summary['pack_tiles'])):
+            sources=(work.get('sources',0) if work else summary['sources'])
+            ready=(work.get('READY',0) if work else summary['ready'])
+            waiting=((work.get('QUEUED',0)+work.get('DEFERRED',0)+work.get('RUNNING',0))
+                     if work else summary['waiting'])
+            failed=(work.get('FAILED',0) if work else summary['failed'])
+            pack=('' if not summary or not summary['pack_tiles'] else
+                  f" · {summary['pack_tiles']} in {summary['pack_scale']}x pack")
+            text=(f'{sources} captured tiles · {ready} enhanced · {waiting} waiting'+
+                  (f' · {failed} failed' if failed else ''))
+            self.cache_info.set(text+pack)
+            self.preparation_info.set(f'Artwork: {sources} captured · {ready} enhanced · {waiting} waiting'+
+                                      (f' · {failed} failed' if failed else '')+pack)
         else:
-            self.cache_info.set('No NES tiles prepared yet. Enhanced play records visible tiles; close the game to prepare them.')
+            self.cache_info.set('No NES tiles prepared yet. Enhanced play uses replacements once artwork is prepared.')
+            self.preparation_info.set('Artwork: no NES tiles prepared yet.')

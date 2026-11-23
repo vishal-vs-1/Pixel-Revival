@@ -1,67 +1,221 @@
 """Start selected players and present their runtime measurements."""
 
 import json
+import threading
 import time
 from pathlib import Path
 from tkinter import messagebox
+from systems.comparison import ComparisonPlayers
 from systems.contracts import GameRef, NES
+from .comparison import ComparisonWindow
+
+
+def _read_json_limited(path, limit=65536):
+    """Read a small player report without letting a huge file stall the UI."""
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
+            return None
+        document = json.loads(path.read_text(encoding="utf-8"))
+        return document if isinstance(document, dict) else None
+    except (OSError, ValueError):
+        return None
 
 
 class LauncherPlayback:
-    def play(self, original=False, game=None):
+    def _blocked_message(self):
+        reason = getattr(self, 'busy_reason', '')
+        if reason:
+            return f'Finish {reason} before starting the player.'
+        return 'Finish preparing artwork before starting the player.'
+
+    def play_comparison(self):
+        if getattr(self, 'busy', False) or not (game := self.game()):
+            if getattr(self, 'busy', False):
+                self.status.set(self._blocked_message())
+            return
+        if GameRef.from_metadata(game).system == NES and not self.library.enhanced_available(NES):
+            self.status.set('Side-by-side comparison requires an Enhanced-capable NES player.')
+            return
+        self.start_comparison(game)
+
+    def start_comparison(self, game):
+        """Launch both players; the Rust pair starts inline on the window thread."""
+        ref = GameRef.from_metadata(game)
+        old = self.players.get(ref.id)
+        if old and old[0].poll() is None:
+            messagebox.showinfo('Already running',
+                                'This game is already open. Close its player window before launching it again.')
+            return
+        self.busy = True
+        self.busy_reason = 'starting the comparison players'
+        self.status.set('Starting both comparison players…')
+        self.progress.start()
+        in_tool = (ref.system == NES and
+                   getattr(getattr(self, 'nes_runtime', None),
+                           'supports_in_tool_comparison', False) is True)
+        if in_tool:
+            try:
+                process, log = self.library.launch(game, comparison=True,
+                                                   host_parent=self.root)
+            except Exception as error:
+                self.comparison_failed((game, error))
+            else:
+                self.comparison_started((game, process, log))
+            return
+
+        def worker():
+            try:
+                process, log = self.library.launch(game, comparison=True,
+                                                   host_parent=self.root)
+            except Exception as error:
+                self.messages.put(('comparison_failed', (game, error)))
+            else:
+                self.messages.put(('comparison_started', (game, process, log)))
+
+        threading.Thread(target=worker, name='comparison-launch', daemon=True).start()
+
+    def _finish_comparison_launch(self):
+        self.busy = False
+        self.busy_reason = ''
+        self.progress.stop()
+
+    def comparison_started(self, value):
+        game, process, log = value
+        ref = GameRef.from_metadata(game)
+        self.players[ref.id] = (process, log)
+        self.player_refs[ref.id] = ref
+        if getattr(process, 'owns_window', False):
+            # The Rust pair already owns one Tk window with both panes.
+            process.view = process
+            self._notify_player_started(ref, log)
+            self.status.set('Comparison opened in this window with shared keyboard controls.')
+            self._finish_comparison_launch()
+            return
+        try:
+            process.view = ComparisonWindow(
+                self.root, process, game['name'],
+                embed_players=(ref.system != NES))
+        except (OSError, RuntimeError, ValueError) as error:
+            for player in getattr(process, 'players', ()):
+                if player.poll() is None:
+                    try:
+                        player.terminate()
+                    except OSError:
+                        pass
+            self.comparison_failed((game, error))
+            return
+        self._notify_player_started(ref, log)
+        self.status.set('Comparison opened with shared keyboard controls.')
+        self._finish_comparison_launch()
+
+    def comparison_failed(self, value):
+        game, error = value
+        ref = GameRef.from_metadata(game)
+        self.players.pop(ref.id, None)
+        self.player_refs.pop(ref.id, None)
+        self._finish_comparison_launch()
+        try:
+            self.library.set_player_state(ref, False)
+        except KeyError:
+            pass
+        if not any(process.poll() is None for process, _ in self.players.values()) and not self.preparation_paused:
+            self.library.resume_all()
+        messagebox.showerror('Could not start comparison', str(error))
+
+    def play(self, original=None, game=None):
         if self.busy:
-            self.status.set('Finish preparing artwork before starting the player.')
+            self.status.set(self._blocked_message())
             return
         game = game or self.game()
         if not game:
             return
         ref=GameRef.from_metadata(game)
+        if original is None:
+            original = not self.enhance_play.get()
         capture=False
         if ref.system==NES:
             if game.get('runtime_status')=='setup-needed':
-                self.status.set('The NES player is not installed; this cartridge remains saved in your library.')
+                self.status.set('The Rust NES player is not built; this cartridge remains saved in your library.')
                 return
             if game.get('runtime_status')=='unsupported':
-                self.status.set('This NES cartridge is reported as unsupported by the installed player.')
+                self.status.set('This NES cartridge is reported as unsupported by the Rust player.')
                 return
             capture=not original
             if capture and not self.library.enhanced_available(NES):
-                self.status.set('This NES player build cannot capture tiles; Original playback is still available.')
-                return
-        self.launch_game(game,original,capture=capture)
+                original, capture = True, False
+        self.launch_game(game, original, capture=capture,
+                         pose_mode="record" if ref.system != NES and not original else None)
 
-    def launch_game(self,game,original=False,*,capture=False,player_replacement=False,player_recording=False,
-                    player_regenerated=False,pose_mode=None):
+    def launch_game(self,game,original=False,*,capture=False,pose_mode=None,comparison=False):
         ref=GameRef.from_metadata(game)
         try:
             old = self.players.get(ref.id)
             if old and old[0].poll() is None:
                 messagebox.showinfo('Already running', 'This game is already open. Close its player window before launching it again.')
                 return
-            if ref.system==NES:
-                options = {'player_regenerated': True} if player_regenerated else {}
+            if comparison:
+                process, log = self.library.launch(game, comparison=True,
+                                                   host_parent=self.root)
+            elif ref.system==NES:
                 process,log=self.library.launch(game,original,capture=capture,
-                                                host_parent=self.root, player_replacement=player_replacement,
-                                                player_recording=player_recording, **options)
+                                                host_parent=self.root)
             else:
                 options = {'pose_mode': pose_mode} if pose_mode else {}
                 process,log=self.library.launch(game, original, **options)
             self.players[ref.id] = (process,log)
-            if player_recording and ref.system == NES:
-                self._recording_players.add(ref.id)
             self.player_refs[ref.id]=ref
             self._notify_player_started(ref,log)
+            if comparison:
+                if getattr(process, 'owns_window', False):
+                    process.view = process
+                    self.status.set('Comparison opened in this window with shared keyboard controls.')
+                    return
+                try:
+                    process.view = ComparisonWindow(
+                        self.root, process, game['name'],
+                        embed_players=(ref.system != NES))
+                except (OSError, RuntimeError, ValueError):
+                    for player in process.players:
+                        if player.poll() is None:
+                            player.terminate()
+                    raise
+                self.status.set('Comparison opened with shared keyboard controls.')
+                return
+            if ref.system == NES and type(process).__name__ == "RustNesPlayer":
+                process.view = process
             hint=' '+game.get('startup_hint','')
             if ref.system==NES:
-                mode=('Regenerated poses' if player_regenerated else 'Pose recording' if player_recording
-                      else 'Player replacement' if player_replacement else 'Original' if original else 'Enhanced')
-                suffix='; captured tiles will be prepared after close' if capture else ''
+                mode='Original' if original else 'Enhanced'
+                capability = getattr(self.nes_runtime, 'capture_available', None)
+                can_capture = bool(callable(capability) and capability())
+                if capture and can_capture:
+                    suffix='; captured tiles will be prepared after close'
+                elif capture:
+                    suffix='; using the prepared pack in this window'
+                else:
+                    suffix=''
                 self.status.set(f"Playing {game['name']} in {mode} NES mode{suffix}."+hint)
             elif pose_mode == 'regenerated':
                 self.status.set(f"Playing {game['name']} with regenerated player poses."+hint)
             else:
                 self.status.set(f"Playing {game['name']}. Small live image jobs need fresh frame and input headroom; larger work waits until play ends."+hint)
         except Exception as error:
+            # A comparison window can fail after the pair was registered.
+            # Close and forget it so Play does not stay stuck on
+            # "Already running" with a leaked player process.
+            active = self.players.pop(ref.id, None)
+            self.player_refs.pop(ref.id, None)
+            if active is not None:
+                process = active[0]
+                players = getattr(process, 'players', None)
+                if players is None or not hasattr(players, '__iter__'):
+                    players = (process,)
+                for player in players:
+                    try:
+                        if getattr(player, 'poll', lambda: 0)() is None:
+                            player.terminate()
+                    except (OSError, RuntimeError):
+                        pass
             try:self.library.set_player_state(ref,False)
             except KeyError:pass
             if not any(process.poll() is None for process,_ in self.players.values()) and not self.preparation_paused:
@@ -80,8 +234,9 @@ class LauncherPlayback:
 
     def _notify_player_started(self, ref, log):
         try:
+            player = self.players[ref.id][0]
             self.library.set_player_state(ref,True,log.with_suffix('.stats.json'),
-                                          allow_live=(ref.system!=NES))
+                                          allow_live=(ref.system != NES and not isinstance(player, ComparisonPlayers)))
         except KeyError:
             self._pending_player_states.add(ref)
         else:
@@ -100,14 +255,13 @@ class LauncherPlayback:
             self.metrics.set('Saved artwork is reused. Temporary resized sprites do not need AI conversion.')
             return
         _,log=active
-        try:
-            report=json.loads(Path(str(log.with_suffix('.stats.json'))+'.gpu.json').read_text(encoding='utf-8'))
+        report=_read_json_limited(Path(str(log.with_suffix('.stats.json'))+'.gpu.json'))
+        if report is not None:
             suffix='' if report.get('matched',True) else '\nWindows selected a different GPU from the requested preference.'
-            self.active_gpu.set('Actual playback: '+report['device']+suffix)
-        except (OSError,ValueError,KeyError):pass
+            self.active_gpu.set('Actual playback: '+str(report.get('device','Player'))+suffix)
+        metrics=_read_json_limited(log.with_suffix('.stats.json'))
         try:
-            metrics=json.loads(log.with_suffix('.stats.json').read_text(encoding='utf-8'))
-            if time.time()-metrics['updated']<4:
+            if metrics is not None and time.time()-metrics['updated']<4:
                 live=self.games.get(key,{}).get('asset_work',{}).get('live_reason')
                 scaler=metrics.get('fast_scaler_submit_ms',0.0)
                 actual_backend=metrics.get('backend','Player')
@@ -125,11 +279,14 @@ class LauncherPlayback:
                     detail+='\nLive GPU filter active; detailed artwork prepares in the background.'
                 self.metrics.set(detail+(f'\nLive artwork: {live}' if live else ''))
             else:self.metrics.set('Waiting for screen updates; menus may redraw only after input.')
-        except (OSError,ValueError,KeyError):
+        except (KeyError,TypeError):
             self.metrics.set('Player starting… waiting for frame measurements.')
-        try:
-            with log.open('rb') as file:
-                file.seek(0,2);end=file.tell();file.seek(max(0,end-8192));text=file.read().decode('utf-8',errors='replace')
-            if 'Exception in thread' in text or 'MIDlet event failed' in text:
-                self.compat.set('Compatibility: an error was detected — see saved logs')
-        except OSError:pass
+        now = time.monotonic()
+        if now - getattr(self, '_log_tail_at', 0.0) >= 5.0:
+            self._log_tail_at = now
+            try:
+                with log.open('rb') as file:
+                    file.seek(0,2);end=file.tell();file.seek(max(0,end-8192));text=file.read().decode('utf-8',errors='replace')
+                if 'Exception in thread' in text or 'MIDlet event failed' in text:
+                    self.compat.set('Compatibility: an error was detected — see saved logs')
+            except OSError:pass

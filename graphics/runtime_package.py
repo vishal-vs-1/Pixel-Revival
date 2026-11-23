@@ -142,10 +142,8 @@ def validate_runtime_archive(archive: Path) -> dict[str, str]:
             raise ValueError("Runtime archive is missing: " + ", ".join(sorted(missing)))
 
         dependencies = json.loads(package.read(members["common/dependencies.json"]))
-        nes_runtime = dependencies.get("nes_runtime", {})
-        if (dependencies.get("schema_version") != 1 or dependencies.get("target") != "windows-x64" or
-                not isinstance(nes_runtime.get("commit"), str) or len(nes_runtime["commit"]) != 40 or
-                any(char not in "0123456789abcdef" for char in nes_runtime["commit"])):
+        if (dependencies.get("schema_version") != 1
+                or dependencies.get("target") != "windows-x64"):
             raise ValueError("Runtime archive dependency pins are invalid")
 
         core_name = "common/revival_graphics.dll"

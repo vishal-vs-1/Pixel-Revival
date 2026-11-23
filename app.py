@@ -1,23 +1,23 @@
 """Compose and start the Pixel Revival desktop launcher."""
 
 import queue
-import sys
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
 from systems.jme.library import Library, ROOT
 from storage.atomic import atomic_json
-from storage.paths import APP_ROOT, DATA_ROOT, FROZEN
+from storage.paths import APP_ROOT, DATA_ROOT, RESOURCE_ROOT
 from graphics.gpu_policy import devices as gpu_devices
 from systems.nes.controls import NesControlProfileStore
 from systems.application import ApplicationLibrary
+from systems.comparison import ComparisonPlayers
 from systems.jme.system import JavaMeSystem
 from systems.nes.library import NesLibrary
-from systems.nes.playable_assets import PlayableAssets
 from systems.nes.integration import NesCaptureIntegration
-from systems.nes.runtime_setup import NesRuntimeLocator
+from systems.nes.metadata import DEFAULT_RENDER_SCALE
 from systems.app_settings import ApplicationSettingsStore
 from runtime_assets.recipes import ArtworkRecipes
 from launcher.styles import LauncherStyles
@@ -34,8 +34,14 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
         self.root = root
         self.nes_control_profiles = NesControlProfileStore(
             DATA_ROOT / 'config' / 'nes-control-profiles.json', atomic_json)
-        nes_runtime = NesRuntimeLocator(APP_ROOT, packaged=FROZEN).locate()
-        self.nes_runtime = nes_runtime
+        # NES loads our own Rust library directly through its C ABI. A missing
+        # build keeps the library usable; playback stays disabled until built.
+        try:
+            from systems.nes.rust_player import RustNesRuntime
+            rust_runtime = RustNesRuntime(app_root=RESOURCE_ROOT)
+        except (OSError, RuntimeError):
+            rust_runtime = None
+        self.nes_runtime = rust_runtime
         artwork_recipes = ArtworkRecipes()
         java_library = Library(artwork_recipes=artwork_recipes)
         java = JavaMeSystem(java_library, demo=ROOT / 'fixtures' / 'RevivalDemo.jar')
@@ -45,7 +51,7 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
             integration = NesCaptureIntegration(
                 game["id"], recipe,
                 expected_palette_profile=game.get("palette_profile"),
-                pack_scale=game.get("render_scale", 2),
+                pack_scale=game.get("render_scale", DEFAULT_RENDER_SCALE),
             )
             return java_library.asset_service.register_game(
                 folder, recipe, game=game, ai_recipe=ai_recipe,
@@ -54,8 +60,8 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
 
         # Keep the JME paths intact and give NES its independently owned storage tree.
         nes = NesLibrary(DATA_ROOT / 'nes', asset_service=java_library.asset_service,
-                         control_profiles=self.nes_control_profiles, runtime=nes_runtime,
-                         register_artwork=register_nes_artwork, playable_assets=PlayableAssets(APP_ROOT))
+                         control_profiles=self.nes_control_profiles, runtime=rust_runtime,
+                         register_artwork=register_nes_artwork)
         self.nes_library = nes
         self.library = ApplicationLibrary((java, nes), java_library.asset_service)
         self.app_settings = ApplicationSettingsStore(
@@ -71,10 +77,10 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
         self._preview_count = None
         self.library.set_asset_listener(self._on_asset_stats)
         self.busy = False
+        self.busy_reason = ''
         self.deleting_games = {}
         self.player_refs = {}
         self._pending_player_states = set()
-        self._recording_players = set()
         self._delete_workers = ThreadPoolExecutor(max_workers=2,thread_name_prefix='delete-game')
         self.pending_imports = deque()
         self.preparation_paused = False
@@ -95,13 +101,31 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
         threading.Thread(target=self.bootstrap_asset_service,daemon=True).start()
 
     def close(self):
+        comparisons = [process.view for process, _log in self.players.values()
+                       if isinstance(process, ComparisonPlayers) and hasattr(process, 'view')
+                       and process.poll() is None]
+        if comparisons:
+            for view in comparisons:
+                view.close()
+            self.root.after(100, self.close)
+            return
+        for process, _log in list(self.players.values()):
+            view = getattr(process, 'view', None)
+            if view is None:
+                continue
+            close = getattr(view, 'shutdown', None) or getattr(view, 'close', None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
         shutdown_nes = getattr(self.nes_runtime, 'shutdown', None)
         if callable(shutdown_nes):
             try:
                 shutdown_nes()
             except Exception as error:
                 messagebox.showerror('NES player is still closing',
-                                     f'Mesen could not finish saving and close safely.\n\n{error}')
+                                     f'The NES player could not finish saving and close safely.\n\n{error}')
                 return
         self._delete_workers.shutdown(wait=False)
         self._preview_worker.shutdown(wait=False, cancel_futures=True)
@@ -136,8 +160,6 @@ def main():
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] == '--nes-player-probe':
-        from systems.nes.playable_probe import run
-        run(sys.argv[2:])
-    else:
-        main()
+    from multiprocessing import freeze_support
+    freeze_support()
+    main()

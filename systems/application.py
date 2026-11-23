@@ -34,7 +34,8 @@ class ApplicationLibrary:
         with self._lock:
             # Publish the full index even for a filtered view. IDs are shared by
             # the artwork service, and hidden entries must retain their owners.
-            self._index = None
+            # Keep the previous index live while rebuilding so a concurrent
+            # route/reference does not trigger another full scan.
             index = GameIndex()
             result = []
             for backend in self._systems:
@@ -96,6 +97,12 @@ class ApplicationLibrary:
     def reference(self, game):
         """Resolve an ID to its indexed system identity for asynchronous callbacks."""
         return self._route(game)[0]
+
+    def asset_summary(self, game):
+        """Return saved tile counts when a live asset event has not arrived yet."""
+        _, backend = self._route(GameRef.from_metadata(game))
+        summary = getattr(backend, "asset_summary", None)
+        return summary(game) if callable(summary) else None
 
     def workspace(self, game):
         ref, backend = self._route(game)

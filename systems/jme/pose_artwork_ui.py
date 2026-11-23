@@ -29,7 +29,7 @@ class JavaPlayableArtwork:
         count = len(keys)
         hint = (f'{count} confirmed player poses. Regenerate them or choose your own images.'
                 if count else 'Open Review captured artwork and confirm the player poses.'
-                if poses else 'Play & record poses to capture artwork for review.')
+                if poses else 'Enable Enhance play and click Play to capture artwork for review.')
         return ArtworkView(hint, tuple(poses), artwork.assigned(None), record=True,
                            regenerated=artwork.regenerated.current(keys))
 

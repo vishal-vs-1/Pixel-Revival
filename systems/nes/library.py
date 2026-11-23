@@ -35,7 +35,7 @@ class NesLibrary:
     presentation = SystemPresentation("Choose an NES cartridge", (("NES cartridge", "*.nes"),))
 
     def __init__(self, root, *, asset_service, runtime=None, register_artwork=None, inspector=None,
-                 write_metadata=atomic_json, control_profiles=None, playable_assets=None):
+                 write_metadata=atomic_json, control_profiles=None):
         root = Path(root)
         self._storage = GameStorage(root / "library", root / "rendered-games", source_filename="game.nes")
         self._service = asset_service
@@ -44,10 +44,8 @@ class NesLibrary:
         self._inspector = inspector if inspector is not None else NesRomInspector()
         self._write_metadata = write_metadata
         self._control_profiles = control_profiles
-        self.playable_assets = playable_assets
         self._lock = threading.RLock()
         self._deleting = set()
-        self._detecting_players = set()
         self._players = {}
 
     @property
@@ -55,16 +53,54 @@ class NesLibrary:
         return self._control_profiles
 
     def enhanced_available(self):
+        """True when this library can show prepared replacements or record tiles."""
+        if getattr(self._runtime, "supports_enhanced", False):
+            return True
         capability = getattr(self._runtime, "capture_available", None)
-        return bool(self._runtime is not None and callable(capability) and capability())
+        return bool(callable(capability) and capability())
+
+    def asset_summary(self, game):
+        """Read saved tile counts and the current pack without waiting for a live event."""
+        from runtime_assets.store import AssetStore
+        workspace = self.workspace(game["id"])
+        pointer = {}
+        try:
+            pointer = json.loads((workspace / ".runtime" / "nes-pack.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            pass
+        recipe_key = pointer.get("recipe_key") if isinstance(pointer, dict) else None
+        counts = {}
+        if isinstance(recipe_key, str):
+            try:
+                counts = AssetStore(workspace).counts(recipe_key)
+            except (OSError, ValueError):
+                counts = {}
+        pack_tiles = 0
+        pack_scale = None
+        try:
+            manifest_path = workspace / str(pointer["manifest"])
+            if manifest_path.is_file() and manifest_path.resolve().is_relative_to(workspace.resolve()):
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                pack_tiles = len(manifest.get("tiles", ()))
+                pack_scale = manifest.get("pack_scale")
+        except (OSError, ValueError, TypeError, KeyError):
+            pass
+        return {
+            "sources": int(counts.get("sources", 0)),
+            "ready": int(counts.get("READY", 0)),
+            "waiting": int(counts.get("QUEUED", 0) + counts.get("RUNNING", 0) + counts.get("DEFERRED", 0)),
+            "failed": int(counts.get("FAILED", 0)),
+            "pack_tiles": pack_tiles,
+            "pack_scale": pack_scale,
+        }
 
     def workspace(self, identity):
         return self._storage.game_paths(identity)[1]
 
     def texture_dir(self, identity, artwork_backend):
-        if artwork_backend not in ("pixel", "ai"):
+        if artwork_backend not in ("pixel", "ai", "redraw"):
             raise ValueError("Unknown artwork backend.")
-        return self.workspace(identity) / ("textures-ai" if artwork_backend == "ai" else "textures")
+        return self.workspace(identity) / {"ai": "textures-ai", "redraw": "textures-redraw"}.get(artwork_backend, "textures")
 
     def _metadata_path(self, identity):
         folder = self.workspace(identity)
@@ -103,8 +139,6 @@ class NesLibrary:
     def _require_idle(self, identity):
         if identity in self._deleting:
             raise RuntimeError("This NES game is being deleted.")
-        if identity in self._detecting_players:
-            raise RuntimeError('Wait for NES player detection to finish.')
         process = self._players.get(identity)
         if process is not None and process.poll() is None:
             raise RuntimeError("Close the NES player before changing or deleting this game.")
@@ -225,6 +259,8 @@ class NesLibrary:
                     on_error(str(error))
 
     def launch(self, game, original=False, **kwargs):
+        if self._runtime is None:
+            raise RuntimeError("Build the Rust NES player (rust-nes/mesen-player) before playing.")
         identity = game["id"]
         with self._lock:
             self._require_idle(identity)
@@ -245,68 +281,22 @@ class NesLibrary:
                     NES_DEFAULT_PROFILE, "NES control profile store is unavailable"
                 )
             controls = dict(resolution.profile.bindings)
-            if any(kwargs.get(mode) for mode in ('player_replacement', 'player_recording', 'player_regenerated')):
-                if self.playable_assets is None:
-                    raise RuntimeError('Player-sprite replacement is unavailable.')
-                options = {'record': True} if kwargs.get('player_recording') else {}
-                if kwargs.get('player_regenerated'):
-                    options['regenerated'] = True
-                process, log = self.playable_assets.launch(identity, source, self.workspace(identity), controls, **options)
-                self._players[identity] = process
-                return process, log
             runtime_options = dict(kwargs)
+            comparison = runtime_options.pop("comparison", False)
             runtime_options["controls"] = controls
             runtime_options["controls_fallback_reason"] = resolution.reason
-            process, log = self._runtime.launch(
-                current, source, self.workspace(identity), original=original, **runtime_options
-            )
+            if comparison:
+                compare = getattr(self._runtime, "launch_comparison", None)
+                if (getattr(self._runtime, "supports_in_tool_comparison", False) is not True
+                        or compare is None):
+                    raise RuntimeError("Side-by-side comparison requires the in-tool NES player.")
+                process, log = compare(current, source, self.workspace(identity), **runtime_options)
+            else:
+                process, log = self._runtime.launch(
+                    current, source, self.workspace(identity), original=original, **runtime_options
+                )
             self._players[identity] = process
             return process, log
-
-    def detect_playable_asset(self, identity, *, state=None, latest=False):
-        with self._lock:
-            self._require_idle(identity)
-            if self.playable_assets is None:
-                raise RuntimeError('Player-sprite replacement is unavailable.')
-            self._read(identity)
-            source, workspace = self._storage.source_path(identity), self.workspace(identity)
-            self._detecting_players.add(identity)
-        try:
-            return self.playable_assets.detect(identity, source, workspace, state=state, latest=latest)
-        finally:
-            with self._lock:
-                self._detecting_players.discard(identity)
-
-    def import_playable_recording(self, identity):
-        with self._lock:
-            self._require_idle(identity)
-            return self.playable_assets.import_recording(identity, self._storage.source_path(identity),
-                                                         self.workspace(identity))
-
-    def save_playable_image(self, identity, image, *, key=None):
-        with self._lock:
-            self._require_idle(identity)
-            if self.playable_assets is None:
-                raise RuntimeError('Player-sprite replacement is unavailable.')
-            self._read(identity)
-            self.playable_assets.save_image(identity, self.workspace(identity), image, key=key)
-
-    def clear_playable_overrides(self, identity):
-        with self._lock:
-            self._require_idle(identity)
-            if self.playable_assets is None:
-                raise RuntimeError('Player-sprite replacement is unavailable.')
-            self._read(identity)
-            self.playable_assets.clear_overrides(identity, self.workspace(identity))
-
-    def regenerate_playable_poses(self, identity):
-        with self._lock:
-            self._require_idle(identity)
-            if self.playable_assets is None:
-                raise RuntimeError('Player-sprite replacement is unavailable.')
-            self._read(identity)
-            return self.playable_assets.regenerate(identity, self._storage.source_path(identity),
-                                                   self.workspace(identity))
 
     def delete_game(self, identity, progress=_quiet, *, timeout=60.0):
         with self._lock:

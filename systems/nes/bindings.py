@@ -149,7 +149,9 @@ class NesBindingStore:
         for tile in chunk.tiles:
             binding_id = f"{tile.selector}|{'sprite' if tile.sprite else 'background'}"
             previous = self.binding(binding_id)
-            transparency = tile.transparent or (previous.transparency_required if previous else False)
+            # Background color index zero lets behind-background sprites show through.
+            transparency = not tile.sprite or tile.transparent or (
+                previous.transparency_required if previous else False)
             image = tile.image(chunk.palette_rgb, transparent=transparency)
             source_id = image_source_id(image)
             relative = f"original-assets/{source_id}.png"

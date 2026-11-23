@@ -2,6 +2,7 @@ from pathlib import Path
 from struct import pack
 
 import pytest
+from PIL import Image
 
 from runtime_assets.contracts import pixel_recipe
 from runtime_assets.store import AssetStore
@@ -11,13 +12,12 @@ from systems.nes.integration import NesCaptureIntegration
 from systems.nes.tiles import Tile, palette_id
 
 
-def _chunk(root: Path, identity: str, session: str, sequence: int, *,
-           transparent=False):
+def _chunk(root: Path, identity: str, session: str, sequence: int, *, has_color_zero=False):
     palette = bytes(value for value in range(192))
-    pattern = bytes([(0xFE if transparent else 0xFF)] + [0xFF] * 7 + [0] * 8)
+    pattern = bytes([(0xFE if has_color_zero else 0xFF)] + [0xFF] * 7 + [0] * 8)
     path = root / f"{session}-{sequence:08x}.rnt"
     payload = _HEADER.pack(b"RNT1", identity.encode(), session.encode(), sequence, 1, 0, palette)
-    payload += _TILE.pack(4, 2, 0x00112233, pattern, 0, 0, int(transparent), 0)
+    payload += _TILE.pack(4, 2, 0x00112233, pattern, 0, 0, 0, 0)
     path.write_bytes(payload)
     return path
 
@@ -74,16 +74,20 @@ def test_transparency_upgrade_rebinds_the_same_selector(tmp_path):
     workspace = tmp_path / identity
     inbox = workspace / ".runtime" / "nes-capture"
     inbox.mkdir(parents=True)
-    first = _chunk(inbox, identity, session, 0, transparent=False)
+    _chunk(inbox, identity, session, 0)
     store = AssetStore(workspace)
     integration = NesCaptureIntegration(identity, pixel_recipe())
     integration.admit(workspace, store, {"id": identity}, pixel_recipe(), True)
     bindings = NesBindingStore(workspace)
     first_binding = bindings.binding("rom:2,00112233|background")
-    assert first_binding is not None and not first_binding.transparency_required
-    _chunk(inbox, identity, session, 1, transparent=True)
+    assert first_binding is not None and first_binding.transparency_required
+    # Native background captures historically did not set the transparency flag.
+    _chunk(inbox, identity, session, 1, has_color_zero=True)
     integration.discover(workspace, store, pixel_recipe())
     second_binding = bindings.binding("rom:2,00112233|background")
     assert second_binding is not None and second_binding.transparency_required
     assert second_binding.source_id != first_binding.source_id
     assert len(store.list_sources()) == 2
+    source = store.get_source(second_binding.source_id)
+    with Image.open(store.resolve_path(source.relative_path)) as image:
+        assert image.getpixel((7, 0))[3] == 0

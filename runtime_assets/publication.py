@@ -12,46 +12,67 @@ from PIL import Image
 from .work_state import _Game
 
 
+def _names(folder: Path) -> set[str]:
+    """One directory scan replaces thousands of individual existence checks."""
+    try:
+        return {entry.name for entry in os.scandir(folder)}
+    except OSError:
+        return set()
+
+
+def _present(store, relative: str, prefix: str, names: set[str]) -> bool:
+    """Match the usual cache layout without a filesystem resolve per image."""
+    if relative.startswith(prefix):
+        name = relative[len(prefix):]
+        if name and "/" not in name:
+            return name in names
+    return store.resolve_path(relative).is_file()
+
+
 def publish_compatibility(game: _Game, *, limit: int, commit_lock):
     """Maintain the current player's legacy texture folder outside active play."""
-    jobs = game.store.list_ready(game.recipe.key)
+    rows = game.store.list_ready_details(game.recipe.key)
+    directory = {"scale2x-rgba": "textures", "pixel-redraw": "textures-redraw"}.get(
+        game.recipe.algorithm, "textures-ai")
+    target_dir = game.store.resolve_path(directory)
+    target_names = _names(target_dir)
+    ui_names = _names(game.workspace / "textures-ui")
     marker = game.workspace / ".runtime" / "compatibility.json"
     if game.compat_recipe_key != game.recipe.key or game.compat_sources is None:
         game.compat_recipe_key, game.compat_sources = read_compatibility_state(
             game.workspace, game.recipe.key)
     already = game.compat_sources
     pending = []
-    for job in jobs:
-        if not job.relative_output:
+    # One joined query replaces a source lookup per ready image; on large
+    # catalogues that lookup alone stalled the coordinator for half a minute.
+    for row in rows:
+        if not row.relative_output or row.width is None:
             continue
-        source = game.store.get_source(job.source_id)
-        if source is None:
+        name = f"{row.source_id}.png"
+        # Presence is enough to skip; requiring the compatibility marker too
+        # restarted the whole copy from row zero whenever the app closed early.
+        if name in target_names or name in ui_names:
+            already.add(row.source_id)
             continue
-        directory = "textures" if game.recipe.algorithm == "scale2x-rgba" else "textures-ai"
-        target = game.store.resolve_path(f"{directory}/{job.source_id}.png")
-        if (job.source_id in already and target.is_file()) or (
-                game.workspace / "textures-ui" / f"{job.source_id}.png").is_file():
-            already.add(job.source_id)
-            continue
-        pending.append((job, target))
-    for job, target in pending[:limit]:
+        pending.append((row, target_dir / name))
+    for row, target in pending[:limit]:
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(target.name + "." + uuid.uuid4().hex + ".tmp")
         try:
-            shutil.copyfile(game.store.resolve_path(job.relative_output), temporary)
+            shutil.copyfile(game.store.resolve_path(row.relative_output), temporary)
             with commit_lock:
                 if game.paused:
                     game.compat_pending = True
                     return
                 os.replace(temporary, target)
-                already.add(job.source_id)
+                already.add(row.source_id)
         finally:
             temporary.unlink(missing_ok=True)
-    remaining = [job for job, _ in pending[limit:]]
+    remaining = pending[limit:]
     if remaining:
         game.compat_pending = True
         return
-    ready_ids = {job.source_id for job in jobs if job.relative_output}
+    ready_ids = {row.source_id for row in rows if row.relative_output}
     game.compat_pending = not ready_ids.issubset(already)
     if not game.compat_pending:
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -79,41 +100,66 @@ def read_compatibility_state(workspace: Path, recipe_key: str) -> tuple[str, set
     return "", set()
 
 
+_VERIFY_SAMPLE = 64
+
+
+def _verify_output(game: _Game, row) -> bool:
+    """Fully decode one cached output; requeue it when the file is unusable."""
+    try:
+        with Image.open(game.store.resolve_path(row.relative_output)) as image:
+            image.load()
+            is_valid = image.size == (row.width * game.recipe.scale,
+                                      row.height * game.recipe.scale)
+    except (OSError, ValueError):
+        is_valid = False
+    if not is_valid:
+        game.store.invalidate_ready(row.source_id, game.recipe.key)
+    return is_valid
+
+
 def publish_ready(game: _Game):
-    valid_sources = []
-    for job in game.store.list_ready(game.recipe.key):
-        if not job.relative_output:
-            game.store.invalidate_ready(job.source_id, job.recipe_key)
+    """Record the verified ready set without re-checking every file each start."""
+    rows = game.store.list_ready_details(game.recipe.key)
+    current = {}
+    for row in rows:
+        if not row.relative_output or row.width is None or row.height is None:
+            game.store.invalidate_ready(row.source_id, game.recipe.key)
             continue
-        source = game.store.get_source(job.source_id)
-        if source is None:
-            game.store.invalidate_ready(job.source_id, job.recipe_key)
-            continue
-        path = game.store.resolve_path(job.relative_output)
-        try:
-            with Image.open(path) as image:
-                image.verify()
-            with Image.open(path) as image:
-                is_valid = image.size == (source.width * game.recipe.scale,
-                                          source.height * game.recipe.scale)
-        except (OSError, ValueError):
-            is_valid = False
-        if is_valid:
-            valid_sources.append(job.source_id)
-        else:
-            game.store.invalidate_ready(job.source_id, job.recipe_key)
+        current[row.source_id] = row
     ready_dir = game.workspace / ".runtime" / "ready"
-    ready_dir.mkdir(parents=True, exist_ok=True)
     manifest = ready_dir / (game.recipe.key + ".json")
     try:
         previous = json.loads(manifest.read_text(encoding="utf-8"))
+        raw_sources = previous.get("sources", [])
+        previous_sources = {v for v in raw_sources if isinstance(v, str)} if isinstance(raw_sources, list) else set()
         game.generation = max(game.generation, int(previous.get("generation", 0)))
-    except (OSError, ValueError, TypeError):
-        pass
+    except (OSError, ValueError, TypeError, AttributeError):
+        previous_sources = set()
+    current_ids = set()
+    prefix = f"textures-cache/{game.recipe.key}/"
+    cache_names = _names(game.store.resolve_path(prefix))
+    for source_id, row in current.items():
+        if not _present(game.store, row.relative_output, prefix, cache_names):
+            game.store.invalidate_ready(source_id, game.recipe.key)
+            continue
+        current_ids.add(source_id)
+    # Outputs are verified when written, so a publish decodes only a bounded
+    # sample. A first publish on a large catalogue must never stall startup.
+    fresh = sorted(current_ids - previous_sources)
+    trusted = sorted(current_ids & previous_sources)
+    sample = trusted[game.ready_sample_cursor:game.ready_sample_cursor + _VERIFY_SAMPLE]
+    game.ready_sample_cursor = (game.ready_sample_cursor + len(sample)) % max(1, len(trusted))
+    valid_sources = set(current_ids)
+    for source_id in fresh[:_VERIFY_SAMPLE] + sample:
+        if not _verify_output(game, current[source_id]):
+            valid_sources.discard(source_id)
+    if valid_sources == previous_sources and manifest.is_file():
+        return
     game.generation += 1
     payload = {"schema": 1, "generation": game.generation,
                "recipe_key": game.recipe.key, "scale": game.recipe.scale,
                "sources": sorted(valid_sources)}
+    ready_dir.mkdir(parents=True, exist_ok=True)
     temporary = manifest.with_name(manifest.name + "." + uuid.uuid4().hex + ".tmp")
     try:
         temporary.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")),

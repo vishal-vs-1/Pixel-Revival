@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import threading
 import zipfile
@@ -190,3 +191,34 @@ def test_deletions_of_different_games_overlap_without_holding_library_lock(tmp_p
         for thread in threads:thread.join(5)
         library.asset_service.close()
     assert not errors and not library._deleting
+
+
+def test_recovery_does_not_hold_the_library_lock_while_registering(tmp_path):
+    from runtime_assets.contracts import pixel_recipe
+    from runtime_assets.store import AssetStore
+
+    library=Library(tmp_path/'lib',tmp_path/'rendered')
+    folder=library.workspace(GAME);folder.mkdir(parents=True)
+    recipe=pixel_recipe()
+    AssetStore(folder).register_recipe(recipe)
+    (folder/'game.json').write_text(json.dumps({
+        'id':GAME,'name':'Recovery test','system':'j2me','status':'Ready',
+        'recipe_key':recipe.key}),encoding='utf-8')
+    started=threading.Event();release=threading.Event();errors=[]
+    def register_game(*args,**kwargs):
+        started.set();assert release.wait(5)
+    library.asset_service.register_game=register_game
+    worker=threading.Thread(target=library.recover_assets,args=(errors.append,lambda:False))
+    worker.start()
+    try:
+        assert started.wait(5)
+        # Indexing a large catalogue used to hold the lock for minutes, freezing
+        # Play and comparison launches behind it.
+        assert library.lock.acquire(timeout=2)
+        library.lock.release()
+        with pytest.raises(RuntimeError,match='still being prepared'):
+            library.delete_game(GAME)
+        assert GAME in library._registering
+    finally:
+        release.set();worker.join(5);library.asset_service.close()
+    assert not errors and not library._registering

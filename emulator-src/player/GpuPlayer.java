@@ -6,6 +6,7 @@ import java.nio.IntBuffer;
 import java.nio.file.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.IntUnaryOperator;
 import javax.imageio.ImageIO;
 import org.lwjgl.BufferUtils;
@@ -33,7 +34,8 @@ public final class GpuPlayer {
         try {
             GLFWErrorCallback.createPrint(System.err).set();
             if(!glfwInit())throw new IllegalStateException("GLFW could not initialize");
-            boolean hidden=Boolean.getBoolean("jme.hidden");
+            boolean comparison=ComparisonInput.enabled();
+            boolean hidden=Boolean.getBoolean("jme.hidden")||comparison;
             glfwDefaultWindowHints();glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,0);
             glfwWindowHint(GLFW_VISIBLE,hidden?GLFW_FALSE:GLFW_TRUE);glfwWindowHint(GLFW_MAXIMIZED,hidden?GLFW_FALSE:GLFW_TRUE);
             window=glfwCreateWindow(hidden?640:1000,hidden?640:800,"JAR Revival · GPU player",0,0);
@@ -56,6 +58,7 @@ public final class GpuPlayer {
             glfwSetWindowTitle(window,name+" · "+GpuRenderer.device+" · "+controls+" · F11 fullscreen · Esc close");
             if(!hidden)glfwFocusWindow(window);
             glfwSetKeyCallback(window,(handle,key,scan,action,mods)->{
+                if(comparison)return;
                 if(Boolean.getBoolean("jme.inputTrace"))System.out.println("NATIVE KEY key="+key+" scan="+scan+" action="+action+" mapped="+mappedPhoneKey(key));
                 if(key==GLFW_KEY_ESCAPE&&action==GLFW_PRESS){glfwSetWindowShouldClose(handle,true);return;}
                 if(key==GLFW_KEY_F11&&action==GLFW_PRESS) {
@@ -73,8 +76,9 @@ public final class GpuPlayer {
                     System.out.println("KEY DELIVERY mapped="+mapped+" canvasAction="+Mobile.getCanvasAction(mapped)+" display="+(current==null?"null":current.getClass().getName())+" index="+(current instanceof javax.microedition.lcdui.List?((javax.microedition.lcdui.List)current).getSelectedIndex():-1));
                 });
             });
-            glfwSetWindowFocusCallback(window,(handle,focused)->{if(!focused)releaseHeldKeys();});
+            glfwSetWindowFocusCallback(window,(handle,focused)->{if(!comparison&&!focused)releaseHeldKeys();});
             FramePresentationPolicy presentation=new FramePresentationPolicy();
+            ConcurrentLinkedQueue<Runnable> comparisonKeys=new ConcurrentLinkedQueue<Runnable>();
             glfwSetWindowRefreshCallback(window,handle->presentation.requestRedraw());
             Thread game=new Thread(()->{
                 try {
@@ -86,6 +90,8 @@ public final class GpuPlayer {
                     if(!platform.load(MobilePlatform.fileName))throw new IllegalStateException("Game could not be loaded");
                     Mobile.config.settings.put("scrwidth",""+logicalWidth);Mobile.config.settings.put("scrheight",""+logicalHeight);
                     Mobile.updateSettings();platform.setPainter(()->{});platform.runJar();
+                    ComparisonInput.start((token,pressed)->comparisonKeys.add(
+                        ()->dispatchComparisonKey(token,pressed)));
                 }catch(Throwable error){gameFailure=error;error.printStackTrace();glfwSetWindowShouldClose(nativeWindow,true);}
             },"game-runtime");
             game.setDaemon(true);game.start();
@@ -95,6 +101,8 @@ public final class GpuPlayer {
             int proofAfterFrames=Math.max(1,Integer.getInteger("jme.proofAfterFrames",120));
             while(!glfwWindowShouldClose(window)) {
                 glfwPollEvents();
+                Runnable key;
+                while((key=comparisonKeys.poll())!=null)key.run();
                 int pumped=GpuRenderer.pump(4000000L);
                 glfwGetFramebufferSize(window,w,h);
                 long completedFrame=GpuRenderer.submittedFrames;
@@ -133,5 +141,9 @@ public final class GpuPlayer {
             System.err.println("GPU player failed: "+error);error.printStackTrace();
             if(window!=0)glfwDestroyWindow(window);glfwTerminate();System.exit(71);
         }
+    }
+
+    private static void dispatchComparisonKey(String token, boolean pressed) {
+        dispatchKey(GlfwControlKeys.keyForToken(token),pressed ? GLFW_PRESS : GLFW_RELEASE);
     }
 }

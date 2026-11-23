@@ -5,7 +5,7 @@ import threading
 from tkinter import filedialog, messagebox
 from systems.contracts import GameRef, ImportRequest, NES
 from systems.ui_events import ApplicationEvent
-from launcher.labels import SYSTEM_LABELS
+from launcher.labels import SYSTEM_LABELS, ARTWORK_BACKENDS
 
 
 class LauncherOperations:
@@ -65,8 +65,7 @@ class LauncherOperations:
             path = filedialog.askopenfilename(title=presentation.picker_title, filetypes=presentation.filetypes)
         if not path:
             return
-        backend = 'ai' if self.backend.get() == 'AI cartoon' else 'pixel'
-        request=ImportRequest(self.visible_system_id, path, backend)
+        request=ImportRequest(self.visible_system_id, path)
         self.pending_imports.append(request)
         self.status.set(f'Queued {os.path.basename(path)}. You can add more games while preparation finishes.')
         self.start_pending()
@@ -76,6 +75,7 @@ class LauncherOperations:
         if not self.pending_imports or any(p.poll() is None for p,_ in self.players.values()):return
         request=self.pending_imports.popleft()
         self.busy=True
+        self.busy_reason = f'importing {request.path.name}'
         self.status.set(f'Preparing {SYSTEM_LABELS[request.system]} · {request.path.name} · {len(self.pending_imports)} more games queued')
         self.progress.start()
         def worker():
@@ -93,6 +93,7 @@ class LauncherOperations:
     def install_ai(self):
         if self.busy: return
         self.busy=True
+        self.busy_reason = 'installing the AI backend'
         self.progress.start()
         def worker():
             try:
@@ -112,9 +113,10 @@ class LauncherOperations:
         if old and old[0].poll() is None:
             messagebox.showinfo('Game is running','Close the player before changing its artwork style.')
             return
-        backend='ai' if self.backend.get()=='AI cartoon' else 'pixel'
+        backend=ARTWORK_BACKENDS.get(self.backend.get(), 'pixel')
         ref=GameRef.from_metadata(game)
         self.busy=True; self.progress.start()
+        self.busy_reason = f'preparing {game.get("name", "artwork")} artwork style'
         def worker():
             try:
                 game_ready=self.library.prepare_style(game,backend,lambda msg:self.messages.put((

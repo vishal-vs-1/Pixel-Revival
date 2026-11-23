@@ -7,6 +7,7 @@ from runtime_assets.store import AssetStore
 
 from .bindings import NesBindingStore
 from .capture import committed_chunks, quarantine, read_chunk
+from .metadata import DEFAULT_RENDER_SCALE
 from .pack import NesPackGenerator
 
 
@@ -14,7 +15,8 @@ class NesCaptureIntegration:
     """Admit and replay native tiles without adding NES branches to AssetService."""
 
     def __init__(self, identity: str, recipe, *, expected_palette_profile=None,
-                 replay_limit: int = 4, pack_scale: int = 4, pack_generator=None):
+                 replay_limit: int = 4, pack_scale: int = DEFAULT_RENDER_SCALE,
+                 pack_generator=None):
         self.identity = identity
         self.recipe = recipe
         self.expected_palette_profile = expected_palette_profile
@@ -50,7 +52,7 @@ class NesCaptureIntegration:
             # Captures already consumed under an older recipe may have no job for this one.
             queued += sum(store.enqueue(source.source_id, recipe.key) for source in store.list_sources()
                           if source.origin == "nes-tile-v1")
-        # Enhanced capture needs a valid staged pack before Mesen can expose tiles.
+        # Enhanced capture needs a valid staged pack before the Rust compositor runs.
         generator = self.pack_generator or NesPackGenerator(workspace)
         generator.ensure_capture_pack(recipe, pack_scale=self.pack_scale)
         return MigrationReport(added, 0, 0, queued, 0, 0)

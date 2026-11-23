@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Callable
 
 from PIL import Image
 
-from runtime_assets.contracts import EnhancementBackend, Recipe, pixel_recipe
+from runtime_assets.contracts import EnhancementBackend, Recipe, pixel_recipe, redraw_recipe
 
 
 def model_weights_digest(model_directory: Path) -> str:
@@ -29,6 +31,7 @@ def model_weights_digest(model_directory: Path) -> str:
 
 class PixelBackend:
     algorithm = "scale2x-rgba"
+    make_recipe = staticmethod(pixel_recipe)
 
     def __init__(self, scale_image: Callable[[Image.Image], Image.Image]):
         self._scale_image = scale_image
@@ -39,16 +42,60 @@ class PixelBackend:
         available=host_memory()['available_bytes']
         if available and source.width*source.height*256>available//3:
             raise ResourcePressure('Waiting for system memory before preparing this large CPU image.')
-        rgba = source.convert("RGBA")
+        rgba = source if source.mode == "RGBA" else source.convert("RGBA")
         result = self._scale_image(rgba)
         if result.size != (rgba.width * recipe.scale, rgba.height * recipe.scale):
             raise ValueError("Pixel backend returned unexpected image dimensions")
-        return result.convert("RGBA")
+        return result if result.mode == "RGBA" else result.convert("RGBA")
 
     @classmethod
     def _validate_recipe(cls, recipe: Recipe):
-        if recipe != pixel_recipe():
+        if recipe != cls.make_recipe():
             raise ValueError("PixelBackend received an incompatible recipe")
+
+
+class RedrawBackend(PixelBackend):
+    algorithm = "pixel-redraw"
+    make_recipe = staticmethod(redraw_recipe)
+
+    def __init__(self):
+        from .sprite_paint import redraw_asset
+        super().__init__(redraw_asset)
+        self._pool = None
+        self._pool_workers = 0
+
+    def batch_limits(self):
+        from .resources import MIB, PreparationBudget, host_memory
+        memory = host_memory()
+        available = memory["available_bytes"]
+        # Redraw is a cheap CPU filter, so it may use more workers and larger
+        # idle batches than the GPU model path. Memory still caps the pool.
+        workers = min(8, max(1, memory["logical_cpus"] - 1))
+        if available:
+            workers = min(workers, max(1, available // (256 * MIB)))
+        if workers == 1:
+            return PreparationBudget(1, 262_144)
+        return PreparationBudget(1024, 1_048_576, processing_threads=workers)
+
+    def enhance_many(self, sources, recipe, workdir):
+        self._validate_recipe(recipe)
+        budget = self.batch_limits()
+        workers = min(len(sources), budget.processing_threads)
+        if workers < 2:
+            return [self.enhance(source, recipe, workdir) for source in sources]
+        if self._pool is None or self._pool_workers > budget.processing_threads:
+            self.close()
+            self._pool_workers = budget.processing_threads
+            self._pool = ProcessPoolExecutor(max_workers=self._pool_workers,
+                                             mp_context=get_context("spawn"))
+        # Send several small tiles per task to limit Windows IPC overhead.
+        chunk = max(1, len(sources) // (workers * 2))
+        return list(self._pool.map(self._scale_image, sources, chunksize=chunk))
+
+    def close(self):
+        if self._pool is not None:
+            self._pool.shutdown()
+            self._pool = None
 
 
 class NcnnBackend:
@@ -95,11 +142,11 @@ class NcnnBackend:
             operation = upscale
         else:
             operation = self._upscale
-        rgba = source.convert("RGBA")
+        rgba = source if source.mode == "RGBA" else source.convert("RGBA")
         result = operation(rgba, Path(workdir), rgba.getchannel("A"))
         if result.size != (rgba.width * recipe.scale, rgba.height * recipe.scale):
             raise ValueError("NCNN backend returned unexpected image dimensions")
-        return result.convert("RGBA")
+        return result if result.mode == "RGBA" else result.convert("RGBA")
 
 
     def enhance_many(self, sources: list[Image.Image], recipe: Recipe,
@@ -124,7 +171,8 @@ class NcnnBackend:
         for source, result in zip(sources, results):
             if result.size != (source.width * recipe.scale, source.height * recipe.scale):
                 raise ValueError("NCNN batch returned unexpected image dimensions")
-        return [result.convert("RGBA") for result in results]
+        return [result if result.mode == "RGBA" else result.convert("RGBA")
+                for result in results]
 
     def batch_limits(self):
         from runtime_assets.resources import current_budget

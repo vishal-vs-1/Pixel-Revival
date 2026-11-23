@@ -47,7 +47,7 @@ class PipelineTests(unittest.TestCase):
                     import io
                     png=io.BytesIO(); Image.new('RGBA',(4,5),'red').save(png,format='PNG')
                     z.writestr('../../escape.png',png.getvalue())
-                game=library.import_game(source)
+                game=library.import_game(source, backend='pixel')
                 self.assertEqual(game['status'],'Ready')
                 folder=library.workspace(game['id'])
                 self.assertEqual(game['assets'],1)
@@ -57,7 +57,7 @@ class PipelineTests(unittest.TestCase):
                     time.sleep(0.02)
                 self.assertTrue(texture.is_file(),'Background enhancement did not publish the compatibility texture')
                 stamp=texture.stat().st_mtime_ns
-                self.assertEqual(library.import_game(source)['id'],game['id'])
+                self.assertEqual(library.import_game(source, backend='pixel')['id'],game['id'])
                 self.assertEqual(texture.stat().st_mtime_ns,stamp)
                 self.assertFalse((base/'escape.png').exists())
                 self.assertEqual(library.asset_service.stats(game['id'])['sources'],1)
@@ -110,6 +110,22 @@ class PipelineTests(unittest.TestCase):
             migrated.update(width=240,height=320,screen_source='manual')
             atomic_json(path,migrated)
             self.assertEqual(library.games()[0]['width'],240)
+
+    def test_games_ignore_and_never_persist_a_stale_artwork_snapshot(self):
+        from storage.atomic import atomic_json
+        with tempfile.TemporaryDirectory(dir=ROOT/'build') as tmp:
+            base=Path(tmp); library=Library(base/'lib',base/'rendered')
+            identity='a'*64
+            path=library.workspace(identity)/'game.json'
+            atomic_json(path,{'id':identity,'name':'Snapshot test',
+                              'asset_work':{'READY':7,'QUEUED':3}})
+            loaded=library.games()[0]
+            # Saved counters go stale as soon as enhancement runs; only the
+            # asset service may supply them to the library screen.
+            self.assertNotIn('asset_work',loaded)
+            loaded['asset_work']={'READY':9,'QUEUED':1}
+            library.save(loaded)
+            self.assertNotIn('asset_work',json.loads(path.read_text(encoding='utf-8')))
 
     def test_background_pause_stops_new_jobs_and_preserves_cache(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'build') as tmp:

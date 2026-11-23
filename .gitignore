@@ -21,6 +21,9 @@ original-assets/
 # Local game files and private work history.
 /gamesss/
 /local-work/
+/nes/
+/.codex/
+/test-roms/
 /tools/nes-runtime/
 /tools/common-runtime/
 /rms/

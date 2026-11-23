@@ -17,6 +17,7 @@ class PoseChoice:
     preview: Path
     image: Path
     confirmed: bool = True
+    replaceable: bool = True
 
 
 @dataclass(frozen=True)
@@ -25,17 +26,17 @@ class ArtworkView:
     poses: tuple = ()
     default: Path | None = None
     record: bool = False
-    scan: bool = False
-    detect: bool = False
     regenerated: Path | None = None
 
 
 class PlayableArtworkPanel(ttk.Frame):
-    def __init__(self, parent, app, nes, java):
+    def __init__(self, parent, app, nes, java, *, pack_before=None):
         super().__init__(parent)
         self.app = app
         self.nes = nes
         self.java = java
+        self._pack_before = pack_before
+        self._packed = True
         self.identity = None
         self.selection_key = None
         self.choices = {}
@@ -46,18 +47,12 @@ class PlayableArtworkPanel(ttk.Frame):
         ttk.Label(self, textvariable=self.hint, wraplength=390).pack(fill='x', pady=(4, 8))
 
         actions = self._row()
-        self.record_button = self._button(actions, 'Play & record poses', self.record)
         self.image_button = self._button(actions, 'Choose image', self.choose_image)
         self.play_button = self._button(actions, 'Play with image', self.play)
 
         generation = self._row()
         self.regenerate_button = self._button(generation, 'Regenerate all poses', self.regenerate)
         self.play_regenerated_button = self._button(generation, 'Play with regenerated poses', self.play_regenerated)
-
-        self.nes_tools = self._row()
-        self.detect_button = self._button(self.nes_tools, 'Detect player', self.nes.detect)
-        self.scan_button = self._button(self.nes_tools, 'Scan latest', lambda: self.nes.detect(latest=True))
-        self.choose_state_button = self._button(self.nes_tools, 'Choose save state', self.nes.scan_state)
 
         self.review_tools = self._row()
         ttk.Checkbutton(self.review_tools, text='Review captured artwork', variable=self.show_candidates,
@@ -93,33 +88,37 @@ class PlayableArtworkPanel(ttk.Frame):
         return button
 
     @property
-    def detecting(self):
-        return self.nes.detecting
-
-    @property
     def backend(self):
         return self.nes if self.app.visible_system_id == NES else self.java
 
     def refresh(self, game):
+        if self.backend is None:
+            self.review_tools.pack_forget()
+            if self._packed:
+                self.pack_forget()
+                self._packed = False
+            return
+        if not self._packed:
+            self.pack(fill='x', before=self._pack_before, pady=(14, 0))
+            self._packed = True
         identity = GameRef.from_metadata(game) if game else None
         if identity != self.identity:
             self.identity, self.selection_key = identity, None
             self.show_candidates.set(False)
         nes = self.backend is self.nes
-        # Keep system-specific discovery actions in the same place under the shared controls.
-        for row, visible in ((self.nes_tools, nes), (self.review_tools, not nes)):
-            if visible and not row.winfo_manager():
-                row.pack(fill='x', pady=(4, 0), after=self.record_button.master)
-            elif not visible:
-                row.pack_forget()
-        idle = bool(game) and not self.app.busy and not (nes and self.detecting)
+        if nes:
+            self.review_tools.pack_forget()
+        elif not self.review_tools.winfo_manager():
+            self.review_tools.pack(fill='x', pady=(4, 0), after=self.play_button.master)
+        idle = bool(game) and not self.app.busy
         player = self.app.players.get(identity.id) if identity else None
         can_generate = idle and not (player and player[0].poll() is None)
         try:
             view = self.backend.view(game)
             poses = [pose for pose in view.poses if pose.confirmed or self.show_candidates.get()]
             confirmed = [pose for pose in view.poses if pose.confirmed]
-            custom = any(pose.image.is_file() for pose in confirmed)
+            replaceable = [pose for pose in confirmed if pose.replaceable]
+            custom = any(pose.image.is_file() for pose in replaceable)
             default = bool(view.default and view.default.is_file())
             self.choices = {'Default · all player poses': None} if view.default else {}
             self.choices.update({f'{i:02d} · {pose.label}' + (' · custom' if pose.image.is_file() else ''): pose.key
@@ -144,15 +143,13 @@ class PlayableArtworkPanel(ttk.Frame):
                 self._show_image(self.regenerated_preview, None)
             self.regenerated_preview.configure(text='Regenerated' if self.regenerated_preview.picture else '')
             for button, available in (
-                (self.record_button, view.record), (self.detect_button, view.detect),
-                (self.scan_button, view.scan), (self.choose_state_button, view.scan),
-                (self.image_button, bool(image)), (self.clear_button, bool(image and image.is_file())),
-                (self.play_button, custom or bool(confirmed and default)),
+                (self.image_button, bool(image and (not selected or selected.replaceable))), (self.clear_button, bool(image and image.is_file())),
+                (self.play_button, custom or bool(replaceable and default)),
                 (self.default_button, default and custom), (self.confirm_button, selected is not None),
             ):
                 button.configure(state='normal' if idle and available else 'disabled')
             self.regenerate_button.configure(state='normal' if can_generate and confirmed else 'disabled')
-            self.play_regenerated_button.configure(state='normal' if can_generate and view.regenerated else 'disabled')
+            self.play_regenerated_button.configure(state='normal' if can_generate and view.regenerated and replaceable else 'disabled')
         except (OSError, ValueError, KeyError, TypeError) as error:
             self.hint.set(str(error))
             self.pose_picker.configure(state='disabled', values=())
@@ -161,8 +158,7 @@ class PlayableArtworkPanel(ttk.Frame):
             self._show_image(self.replacement_preview, None)
             self._show_image(self.regenerated_preview, None)
             self.regenerated_preview.configure(text='')
-            for button in (self.record_button, self.detect_button, self.scan_button, self.choose_state_button,
-                           self.image_button, self.clear_button, self.play_button, self.default_button,
+            for button in (self.image_button, self.clear_button, self.play_button, self.default_button,
                            self.confirm_button, self.regenerate_button, self.play_regenerated_button):
                 button.configure(state='disabled')
 
@@ -184,7 +180,7 @@ class PlayableArtworkPanel(ttk.Frame):
 
     def _apply(self, action):
         game = self.app.game()
-        if not game or self.app.busy or (self.backend is self.nes and self.detecting):
+        if not game or self.app.busy or self.backend is None:
             return
         try:
             action(game)
@@ -225,6 +221,7 @@ class PlayableArtworkPanel(ttk.Frame):
             return
         backend = self.backend
         self.app.busy = True
+        self.app.busy_reason = f'regenerating poses for {game["name"]}'
         self.app.status.set(f'Regenerating player poses for {game["name"]}.')
         self.app.progress.start()
         self.refresh(game)
@@ -241,6 +238,7 @@ class PlayableArtworkPanel(ttk.Frame):
 
     def regenerated(self, count, error):
         self.app.busy = False
+        self.app.busy_reason = ''
         self.app.progress.stop()
         self.refresh(self.app.game_if_selected())
         self.app._update_row_actions()

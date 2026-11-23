@@ -72,6 +72,7 @@ def make_app(root,monkeypatch,base,*,count=20):
     monkeypatch.setattr('app.Library',lambda **kwargs:library)
     monkeypatch.setattr('app.DATA_ROOT',base)
     monkeypatch.setattr('app.APP_ROOT',base)
+    monkeypatch.setattr('app.RESOURCE_ROOT',base)
     monkeypatch.setattr('app.gpu_devices',lambda:[])
     monkeypatch.setattr('runtime_assets.ai.available',lambda:False)
     app=App(root)
@@ -110,7 +111,8 @@ def test_java_character_artwork_routes_record_and_replacement(root, tmp_path, mo
     assert artwork.selected(pose.stem).is_file()
     assert panel.play_button.instate(['!disabled'])
 
-    panel.record_button.invoke()
+    app.enhance_play.set(True)
+    app.play()
     panel.play_button.invoke()
     assert [call.kwargs['pose_mode'] for call in app.launch_game.call_args_list] == ['record', 'replace']
 
@@ -129,7 +131,8 @@ def test_java_character_artwork_routes_record_and_replacement(root, tmp_path, mo
 
     app.system_buttons[NES].invoke()
     assert app.playable_artwork is panel
-    assert panel.detect_button.master.winfo_manager() == 'pack'
+    assert not hasattr(panel, 'detect_button')
+    assert not panel.review_tools.winfo_manager()
 
 
 def test_wheel_scrolls_only_the_panel_containing_the_event(root):
@@ -299,7 +302,7 @@ def test_nes_mode_uses_rom_picker_profile_aspect_and_honest_player_status(root,t
     assert app.tree.get_children()==(game['id'],)
     assert app.nes_cartridge_info.get().startswith('INES cartridge\nMapper 0')
     assert str(app.play_button.cget('state'))=='disabled'
-    assert 'setup is required' in app.nes_runtime_info.get()
+    assert 'Rust NES player is not built' in app.nes_runtime_info.get()
     assert app.aspect.get()=='4:3'
 
     app.aspect.set('16:15')
@@ -313,7 +316,7 @@ def test_nes_mode_uses_rom_picker_profile_aspect_and_honest_player_status(root,t
     monkeypatch.setattr('launcher.operations.filedialog.askopenfilename',lambda **kwargs:str(chosen))
     app.start_pending=Mock()
     app.import_game()
-    assert app.pending_imports[-1]==ImportRequest(NES,chosen,'pixel')
+    assert app.pending_imports[-1]==ImportRequest(NES,chosen,'redraw')
     app.system_buttons[JAVA_ME].invoke()
     assert app.system_buttons[JAVA_ME].instate(['selected'])
     assert root.cget('bg')=='#0c121c'
@@ -334,18 +337,18 @@ def test_nes_play_offers_enhanced_capture_and_original_modes(root,tmp_path,monke
     }
     app._show_nes_game(game)
     root.update()
-    assert app.play_button.cget('text').endswith('Play enhanced')
-    assert app.compare_button.cget('text')=='Play original'
-    assert str(app.compare_button.cget('state'))=='normal'
-    assert app.compare_button.winfo_ismapped()
-
-    launch=Mock();monkeypatch.setattr(app,'launch_game',launch)
+    assert app.play_button.cget('text') == 'Play'
+    assert app.enhance_checkbox.winfo_ismapped()
+    assert not hasattr(app, 'compare_button')
+    launch = Mock()
+    monkeypatch.setattr(app, 'launch_game', launch)
     app.play(game=game)
-    app.play(original=True,game=game)
-    assert launch.call_args_list[0].args==(game,False)
-    assert launch.call_args_list[0].kwargs=={'capture':True}
-    assert launch.call_args_list[1].args==(game,True)
-    assert launch.call_args_list[1].kwargs=={'capture':False}
+    assert launch.call_args.args == (game, True)
+    assert launch.call_args.kwargs == {'capture': False, 'pose_mode': None}
+    app.enhance_play.set(True)
+    app.play(game=game)
+    assert launch.call_args.args == (game, False)
+    assert launch.call_args.kwargs == {'capture': True, 'pose_mode': None}
     app.library.close(timeout=0.1)
 
 
@@ -360,66 +363,91 @@ def test_nes_original_playback_stays_available_without_capture_support(root,tmp_
 
     app._show_nes_game(game)
 
-    assert str(app.play_button.cget('state'))=='disabled'
-    assert app.compare_button.cget('text')=='Play original'
-    assert str(app.compare_button.cget('state'))=='normal'
+    assert str(app.play_button.cget('state'))=='normal'
+    assert str(app.enhance_checkbox.cget('state'))=='disabled'
     app.library.close(timeout=0.1)
 
 
-def test_nes_artwork_detection_prompts_for_image_and_routes_play(root, tmp_path, monkeypatch):
-    from PIL import Image
-    from systems.nes.pose_layouts import Cell, Detection, REPLAYS, pose_key
+def test_nes_artwork_uses_saved_summary_when_no_live_stats(root, tmp_path, monkeypatch):
+    app, _ = make_app(root, monkeypatch, tmp_path, count=1)
+    monkeypatch.setattr(app.library, 'asset_summary', Mock(return_value={
+        'sources': 807, 'ready': 798, 'waiting': 0, 'failed': 0,
+        'pack_tiles': 700, 'pack_scale': 4}))
+    app._show_nes_artwork({'id': 'a' * 64, 'name': 'Mario'})
+    assert '807 captured tiles' in app.cache_info.get()
+    assert '798 enhanced' in app.cache_info.get()
+    assert '700 in 4x pack' in app.cache_info.get()
+    assert 'Artwork: 807 captured' in app.preparation_info.get()
+    app.library.close(timeout=0.1)
+
+
+
+
+
+
+def test_comparison_button_starts_a_paired_launch(root, tmp_path, monkeypatch):
+    app, _ = make_app(root, monkeypatch, tmp_path, count=1)
+    start = Mock()
+    monkeypatch.setattr(app, 'start_comparison', start)
+    app.compare_play_button.invoke()
+    start.assert_called_once_with(app.game_if_selected())
+    app.library.close(timeout=0.1)
+
+
+def test_comparison_launch_runs_in_the_background(root, tmp_path, monkeypatch):
+    from types import SimpleNamespace
 
     app, _ = make_app(root, monkeypatch, tmp_path, count=1)
-    assert not app.playable_artwork.nes_tools.winfo_manager()
-    app.system_buttons[NES].invoke()
-    source = tmp_path / 'Test.nes'
-    source.write_bytes(b'NES\x1a\x01\x01' + bytes(10 + 16384 + 8192))
-    game = app.nes_library.import_game(ImportRequest(NES, source, 'pixel'))
-    monkeypatch.setitem(REPLAYS, game['id'], next(iter(REPLAYS.values())))
-    artwork = tmp_path / 'player.png'
-    Image.new('RGBA', (16, 16), 'orange').save(artwork)
-    workspace = app.nes_library.workspace(game['id'])
-    detected = workspace / 'playable-assets' / 'detected.png'
-    detected.parent.mkdir()
-    Image.new('RGBA', (16, 16), 'red').save(detected)
-    pose = ((Cell(1, 'FF162718', 0),) * 4,)
-    mock_detect = Mock(return_value=Detection(pose, detected))
-    monkeypatch.setattr(app.nes_library.playable_assets, 'detect', mock_detect)
-    (detected.parent / 'detected.json').write_text(
-        '{"game":"' + game['id'] + '","poses":[[[1,"FF162718",0],[1,"FF162718",0],[1,"FF162718",0],[1,"FF162718",0]]]}')
-    picker = Mock(return_value=str(artwork))
-    monkeypatch.setattr('launcher.playable_artwork_ui.filedialog.askopenfilename', picker)
+    game = app.games[next(iter(app.games))]
+    player = Mock()
+    player.poll.return_value = None
+    pair = Mock(players=[player], poll=Mock(return_value=None))
+    launch = Mock(return_value=(pair, tmp_path / 'player.log'))
+    monkeypatch.setattr(app.library, 'launch', launch)
+    monkeypatch.setattr(app.library, 'set_player_state', Mock())
+    monkeypatch.setattr('launcher.playback.ComparisonWindow', Mock())
+
+    class Immediate:
+        """Run the launch worker inline so the test never waits or races."""
+
+        def __init__(self, target, name=None, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    # Pair launch used to block Tk while both JVMs started, which left the
+    # whole window unresponsive. It must now report back through the queue.
+    monkeypatch.setattr('launcher.playback.threading', SimpleNamespace(Thread=Immediate))
+    app.start_comparison(game)
+    assert launch.call_args.args[0]['id'] == game['id']
+    assert launch.call_args.kwargs['comparison'] is True
+    assert 'host_parent' in launch.call_args.kwargs
+    assert app.busy is True and app.busy_reason == 'starting the comparison players'
+    app.poll()
+    assert app.busy is False and app.busy_reason == ''
+    assert 'Comparison opened' in app.status.get()
+    app.library.close(timeout=0.1)
+
+
+
+
+def test_blocked_play_names_the_running_operation(root, tmp_path, monkeypatch):
+    app, _ = make_app(root, monkeypatch, tmp_path, count=1)
     launch = Mock()
     monkeypatch.setattr(app, 'launch_game', launch)
-    app.refresh()
-    root.update()
-    app.playable_artwork.detect_button.invoke()
-    deadline = time.monotonic() + 3
-    while app.playable_artwork.detecting and time.monotonic() < deadline:
-        root.update()
-        time.sleep(0.01)
-    mock_detect.assert_called_once()
-    picker.assert_called_once()
-    assert (detected.parent / 'replacement.png').is_file()
-    app.playable_artwork.pose_picker.current(1)
-    app.playable_artwork.pose_picker.event_generate('<<ComboboxSelected>>')
-    root.update()
-    app.playable_artwork.image_button.invoke()
-    override = app.nes_library.playable_assets.image_path(workspace, pose_key(pose[0]))
-    assert override.is_file()
-    app.playable_artwork.clear_button.invoke()
-    assert not override.exists() and (detected.parent / 'replacement.png').is_file()
-    app.playable_artwork.play_button.invoke()
-    assert launch.call_args.kwargs == {'player_replacement': True}
-    document = detected.parent / 'detected.json'
-    document.write_text(document.read_text().rstrip('}') + ',"slots":[0,1,2,3]}')
-    app.playable_artwork.refresh(game)
-    app.playable_artwork.scan_button.invoke()
-    deadline = time.monotonic() + 3
-    while app.playable_artwork.detecting and time.monotonic() < deadline:
-        root.update()
-        time.sleep(0.01)
-    assert mock_detect.call_args.kwargs == {'state': None, 'latest': True}
-    assert picker.call_count == 2
+
+    app.busy = True
+    app.busy_reason = 'importing Demo.jar'
+    app.play()
+    launch.assert_not_called()
+    assert app.status.get() == 'Finish importing Demo.jar before starting the player.'
+    app.play_comparison()
+    launch.assert_not_called()
+    assert app.status.get() == 'Finish importing Demo.jar before starting the player.'
+
+    app.busy_reason = ''
+    app.play()
+    launch.assert_not_called()
+    assert app.status.get() == 'Finish preparing artwork before starting the player.'
     app.library.close(timeout=0.1)

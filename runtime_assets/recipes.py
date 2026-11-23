@@ -1,7 +1,7 @@
 """Recipe selection and backend resolution for the shared artwork worker."""
 
-from .backends import NcnnBackend, PixelBackend
-from .contracts import pixel_recipe
+from .backends import NcnnBackend, PixelBackend, RedrawBackend
+from .contracts import pixel_recipe, redraw_recipe
 from .pixel import enhance
 
 
@@ -12,6 +12,8 @@ class ArtworkRecipes:
     def for_backend(self, backend):
         if backend == 'pixel':
             return pixel_recipe(), None
+        if backend == "redraw":
+            return redraw_recipe(), None
         ncnn = NcnnBackend()
         recipe = ncnn.recipe()
         self._backends[recipe.key] = ncnn
@@ -22,6 +24,8 @@ class ArtworkRecipes:
             return self._backends[recipe.key]
         if recipe.algorithm == 'scale2x-rgba':
             backend = PixelBackend(enhance)
+        elif recipe.algorithm == RedrawBackend.algorithm:
+            backend = RedrawBackend()
         elif recipe.algorithm == 'realesrgan-x4plus-anime':
             backend = NcnnBackend()
             if backend.recipe().key != recipe.key:

@@ -28,7 +28,6 @@ def _tree(root: Path) -> Path:
     (common / "abi-build-id.txt").write_text("a" * 64 + "\n", encoding="ascii")
     (common / "dependencies.json").write_text(json.dumps({
         "schema_version": 1, "target": "windows-x64",
-        "nes_runtime": {"commit": "b" * 40},
     }), encoding="utf-8")
     (runtime / "LICENSE").write_text("license", encoding="utf-8")
     (runtime / "README.txt").write_text("common runtime", encoding="utf-8")
@@ -134,6 +133,7 @@ def test_portable_app_archive_checks_both_shared_renderer_manifests(tmp_path):
         for name in (
             f"app/python{sys.version_info.major}{sys.version_info.minor}.dll",
             "app/build/jme-player.jar", "app/fixtures/RevivalDemo.jar",
+            "app/build/rust-nes-target/release/mesen_player.dll",
             "app/tools/runtime/bin/java.exe", "app/tools/gpu/lwjgl-3.3.6.jar",
             "app/LICENSE", "app/THIRD-PARTY-LICENSES/Python-LICENSE.txt",
         ):

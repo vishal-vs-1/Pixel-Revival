@@ -51,12 +51,15 @@ class LauncherEvents:
                 self._handle_deleted_event(value)
             elif kind == 'delete_error':
                 self._handle_delete_error_event(value)
+            elif kind == 'comparison_started':
+                self.comparison_started(value)
+            elif kind == 'comparison_failed':
+                self.comparison_failed(value)
             elif kind == 'idle':
                 self.busy = False
+                self.busy_reason = ''
                 self.progress.stop()
                 self.refresh()
-            elif kind == 'playable_asset':
-                self.playable_artwork.nes.detected(*value)
             elif kind == 'poses_regenerated':
                 self.playable_artwork.regenerated(*value)
             elif kind == 'error':
@@ -96,16 +99,6 @@ class LauncherEvents:
                 if (ref and ref.system == self.visible_system_id
                         and (selected := self.game_if_selected()) and selected['id'] == key):
                     self.playable_artwork.refresh(selected)
-                if key in self._recording_players:
-                    self._recording_players.discard(key)
-                    try:
-                        added = self.nes_library.import_playable_recording(key)
-                        if added:
-                            self.status.set(f'Added {added} player poses from gameplay.')
-                            if self.visible_system_id == NES:
-                                self.playable_artwork.refresh(self.game_if_selected())
-                    except (OSError, ValueError, KeyError, RuntimeError, TypeError) as error:
-                        self.status.set(f'Could not import recorded player poses. {error}')
                 if result:
                     reason = ('The GPU player could not continue. Try CPU · compatibility in the Compatibility tab, or check your graphics driver.'
                               if result == 71 and ref is not None and ref.system==JAVA_ME else

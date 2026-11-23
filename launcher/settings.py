@@ -91,8 +91,18 @@ class LauncherSettings:
         if old and old[0].poll() is None:
             messagebox.showinfo('Game is running','Close the player before changing display detail.')
             self.selected();return
+        previous = game.get('render_scale')
         game['render_scale']=4 if self.quality.get().startswith('Detailed') else 2
-        self.library.save(game)
+        try:
+            self.library.save(game)
+        except (OSError,RuntimeError,ValueError) as error:
+            if previous is None:
+                game.pop('render_scale', None)
+            else:
+                game['render_scale'] = previous
+            self.status.set(f'Could not save display detail: {error}')
+            self.selected()
+            return
         self.status.set('Display detail saved. Existing 4× artwork will be reused; no conversion is required.')
 
     def set_aspect(self,event=None):
@@ -114,8 +124,18 @@ class LauncherSettings:
         old=self.players.get(game['id'])
         if old and old[0].poll() is None:
             messagebox.showinfo('Game is running','Close the player before changing the renderer.');self.selected();return
+        previous = game.get('renderer')
         game['renderer']='cpu' if self.renderer.get().startswith('CPU') else 'gpu'
-        self.library.save(game)
+        try:
+            self.library.save(game)
+        except (OSError,RuntimeError,ValueError) as error:
+            if previous is None:
+                game.pop('renderer', None)
+            else:
+                game['renderer'] = previous
+            self.status.set(f'Could not save renderer: {error}')
+            self.selected()
+            return
         self.status.set('Renderer saved. The next launch uses this setting.')
 
     def set_execution_mode(self):
@@ -125,15 +145,36 @@ class LauncherSettings:
         if player and player[0].poll() is None:
             messagebox.showinfo('Game is running','Close the player before changing Java compatibility mode.')
             self.selected();return
+        previous = game.get('execution_mode')
         game['execution_mode']='compatible' if self.execution_compatibility.get() else 'normal'
-        self.library.save(game)
+        try:
+            self.library.save(game)
+        except (OSError,RuntimeError,ValueError) as error:
+            if previous is None:
+                game.pop('execution_mode', None)
+            else:
+                game['execution_mode'] = previous
+            self.status.set(f'Could not save Java execution setting: {error}')
+            self.selected()
+            return
         self.status.set('Java execution setting saved for this game. Applies on the next launch; prepared artwork is reused.')
 
     def set_startup_cleanup(self):
         game=self.game()
         if not game or GameRef.from_metadata(game).system!=JAVA_ME:return
+        previous = game.get('remove_startup_wrappers')
         game['remove_startup_wrappers']=bool(self.remove_wrappers.get())
-        self.library.save(game);self.selected()
+        try:
+            self.library.save(game)
+        except (OSError,RuntimeError,ValueError) as error:
+            if previous is None:
+                game.pop('remove_startup_wrappers', None)
+            else:
+                game['remove_startup_wrappers'] = previous
+            self.status.set(f'Could not save startup option: {error}')
+            self.selected()
+            return
+        self.selected()
         self.status.set('Startup option saved. Applies next time you play; saved artwork is reused.')
 
     def set_resolution(self, event=None):
@@ -143,7 +184,20 @@ class LauncherSettings:
                 messagebox.showinfo('Game is running', 'Close the game before changing its phone screen size.')
                 self.selected()
                 return
-            game['width'], game['height'] = map(int, self.resolution.get().split(' × '))
+            try:
+                width, height = map(int, self.resolution.get().split(' × '))
+            except ValueError:
+                self.status.set('Choose a valid phone screen size.')
+                self.selected()
+                return
+            previous = (game.get('width'), game.get('height'), game.get('screen_source'))
+            game['width'], game['height'] = width, height
             game['screen_source']='manual'
-            self.library.save(game)
+            try:
+                self.library.save(game)
+            except (OSError,RuntimeError,ValueError) as error:
+                game['width'], game['height'], game['screen_source'] = previous
+                self.status.set(f'Could not save screen size: {error}')
+                self.selected()
+                return
             self.refresh()
