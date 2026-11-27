@@ -9,6 +9,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.function.BiConsumer;
+import java.util.HashSet;
+import java.util.Set;
 
 public final class ComparisonInput {
     private static final String READY = System.getProperty("jme.comparisonReady");
@@ -18,18 +20,30 @@ public final class ComparisonInput {
     public static boolean enabled() { return READY != null; }
 
     public static void start(BiConsumer<String, Boolean> deliver) {
+        start(deliver, () -> { });
+    }
+
+    public static void start(BiConsumer<String, Boolean> deliver, Runnable close) {
         if (!enabled()) return;
         Thread reader = new Thread(() -> {
+            Set<String> held = new HashSet<String>();
             try (BufferedReader lines = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.US_ASCII))) {
                 Files.createFile(Paths.get(READY));
                 String line;
                 while ((line = lines.readLine()) != null) {
+                    if (line.equals("!CLOSE")) break;
                     if (line.length() < 2 || line.length() > 13) continue;
                     char operation = line.charAt(0);
-                    if (operation == '+' || operation == '-') deliver.accept(line.substring(1), operation == '+');
+                    String token = line.substring(1);
+                    if (operation == '+' && held.add(token)) deliver.accept(token, true);
+                    else if (operation == '-' && held.remove(token)) deliver.accept(token, false);
                 }
             } catch (Exception failure) {
                 System.err.println("Comparison input: " + failure);
+            } finally {
+                // Losing the launcher's pipe must never leave movement held.
+                for (String token : held) deliver.accept(token, false);
+                close.run();
             }
         }, "launcher-comparison-input");
         reader.setDaemon(true);

@@ -17,6 +17,7 @@ class ApplicationLibrary:
         self._systems = SystemRegistry(backends)
         self.asset_service = asset_service
         self._index = None
+        self._catalog_revision = 0
         self._lock = RLock()
         self._close_lock = Lock()
         self._closed = Event()
@@ -31,7 +32,9 @@ class ApplicationLibrary:
     def games(self, system=None):
         if system is not None:
             self._systems.get(system)
-        with self._lock:
+        while True:
+            with self._lock:
+                revision = self._catalog_revision
             # Publish the full index even for a filtered view. IDs are shared by
             # the artwork service, and hidden entries must retain their owners.
             # Keep the previous index live while rebuilding so a concurrent
@@ -45,18 +48,34 @@ class ApplicationLibrary:
                     if system is None or ref.system == system:
                         result.append(view)
             result.sort(key=lambda game: game["name"].casefold())
-            self._index = index
-            return result
+            with self._lock:
+                # Backend calls may notify the application while holding their
+                # own locks. Never hold the routing lock across those calls.
+                # Retry if an import/delete changed membership during the scan.
+                if revision != self._catalog_revision:
+                    continue
+                self._index = index
+                return result
+
+    def _ensure_index(self):
+        while True:
+            with self._lock:
+                if self._index is not None:
+                    return
+            self.games()
 
     def _route(self, game):
         if not isinstance(game, GameRef):
             validate_game_id(game)
         else:
             self._systems.get(game.system)
-        with self._lock:
-            if self._index is None:
-                self.games()
-            ref = self._index.resolve(game)
+        while True:
+            self._ensure_index()
+            with self._lock:
+                if self._index is None:
+                    continue
+                ref = self._index.resolve(game)
+                break
         return ref, self._systems.get(ref.system)
 
     def import_game(self, request: ImportRequest, progress=_ignore):
@@ -64,19 +83,21 @@ class ApplicationLibrary:
             raise TypeError("Import requires an ImportRequest")
         backend = self._systems.get(request.system)
         # Validate the existing catalog before importing into any system.
-        with self._lock:
-            if self._index is None:
-                self.games()
+        self._ensure_index()
         ref, view = self._view(backend, backend.import_game(request, progress))
-        with self._lock:
-            if self._index is None:
-                self.games()
-            try:
-                self._index.add(ref, allow_existing=True)
-            except ValueError:
-                # Force subsequent lookups to detect a persisted collision.
-                self._index = None
-                raise
+        while True:
+            self._ensure_index()
+            with self._lock:
+                if self._index is None:
+                    continue
+                self._catalog_revision += 1
+                try:
+                    self._index.add(ref, allow_existing=True)
+                except ValueError:
+                    # Force subsequent lookups to detect a persisted collision.
+                    self._index = None
+                    raise
+                break
         return view
 
     def presentation(self, system):
@@ -116,6 +137,7 @@ class ApplicationLibrary:
         ref, backend = self._route(game)
         result = backend.delete_game(ref.id, *args, **kwargs)
         with self._lock:
+            self._catalog_revision += 1
             if self._index is not None:
                 self._index.discard(ref)
         return result
@@ -151,6 +173,10 @@ class ApplicationLibrary:
         ref, _ = self._route(game)
         self.asset_service.set_player_state(ref.id, *args, **kwargs)
 
+    def sync_artwork(self, game):
+        ref, _ = self._route(GameRef.from_metadata(game))
+        return self.asset_service.reconcile(ref.id)
+
     def pause_all(self):
         self.asset_service.pause_all()
 
@@ -160,9 +186,7 @@ class ApplicationLibrary:
     def recover_assets(self, on_error=_ignore):
         if self._closed.is_set():
             return
-        with self._lock:
-            if self._index is None:
-                self.games()
+        self._ensure_index()
         for backend in self._systems:
             if self._closed.is_set():
                 return

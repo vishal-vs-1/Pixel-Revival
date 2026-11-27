@@ -15,6 +15,7 @@ pub mod hd;
 pub mod input;
 pub mod mapper;
 pub mod ppu;
+pub mod pose;
 pub mod rom;
 pub mod state;
 pub mod types;

@@ -7,6 +7,7 @@ from launcher.widgets import ScrollableFrame, TabNavigation, LibraryRowActions
 from launcher.palette import capture_widget_colors, java_color
 from systems.contracts import NES
 from systems.jme.pose_artwork_ui import JavaPlayableArtwork
+from systems.nes.playable_artwork_ui import NesPlayableArtwork
 from launcher.playable_artwork_ui import PlayableArtworkPanel
 from launcher.labels import GPU_CHOICES, SYSTEM_LABELS, ARTWORK_LABELS
 
@@ -172,6 +173,18 @@ def build_window(self, root, java_library):
     self.enhance_play = tk.BooleanVar(master=root, value=False)
     self.enhance_checkbox = ttk.Checkbutton(actions, text='Enhance play', variable=self.enhance_play)
     self.enhance_checkbox.pack(side='left')
+    sprite_options = ttk.Frame(play_panel)
+    sprite_options.pack(fill='x', pady=(0, 8))
+    self.image_play = tk.BooleanVar(master=root, value=False)
+    self.poses_play = tk.BooleanVar(master=root, value=False)
+    self.image_play_checkbox = ttk.Checkbutton(
+        sprite_options, text='Use image', variable=self.image_play,
+        command=lambda: self.select_sprite_playback('image'), state='disabled')
+    self.image_play_checkbox.pack(side='left', padx=(0, 12))
+    self.poses_play_checkbox = ttk.Checkbutton(
+        sprite_options, text='Use regenerated poses', variable=self.poses_play,
+        command=lambda: self.select_sprite_playback('poses'), state='disabled')
+    self.poses_play_checkbox.pack(side='left')
     self.compare_play_button = ttk.Button(play_panel, text='Compare side by side',
                                           command=self.play_comparison)
     self.compare_play_button.pack(anchor='w', pady=(0, 8))
@@ -184,10 +197,12 @@ def build_window(self, root, java_library):
     self.backend=ttk.Combobox(convert,values=tuple(ARTWORK_LABELS.values()),state='readonly',width=21)
     self.backend.set(ARTWORK_LABELS['redraw']);self.backend.pack(side='left',padx=(0,8))
     ttk.Button(convert,text='Prepare',command=self.prepare_style).pack(side='right')
+    self.sync_button=ttk.Button(convert,text='Sync',command=self.sync_artwork)
+    self.sync_button.pack(side='right',padx=(0,8))
     links=tk.Frame(art_panel,bg=self.panel);links.pack(fill='x',pady=(14,0))
-    # NES uses the Rust player with HD packs, not player-pose replacement.
     self.playable_artwork = PlayableArtworkPanel(
-        art_panel, self, None, JavaPlayableArtwork(self, java_library), pack_before=links)
+        art_panel, self, NesPlayableArtwork(self, self.nes_library),
+        JavaPlayableArtwork(self, java_library), pack_before=links)
     self.playable_artwork.pack(fill='x', before=links, pady=(14, 0))
     ttk.Button(links,text='Saved files & logs',command=self.open_folder).pack(side='left',padx=(0,8))
     ttk.Button(links,text='AI setup',command=self.install_ai).pack(side='left')

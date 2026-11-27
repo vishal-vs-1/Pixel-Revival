@@ -32,7 +32,7 @@ MAX_METADATA_BYTES = 65536
 
 class Library(JavaMeArtwork, JavaMePlayback):
     def __init__(self, library=LIBRARY, rendered=RENDERED, workers=2, *, control_profiles=None,
-                 artwork_recipes=None):
+                 artwork_recipes=None, recover_previous_artwork=False):
         self.library, self.rendered = Path(library), Path(rendered)
         self.library.mkdir(parents=True, exist_ok=True)
         self.rendered.mkdir(parents=True, exist_ok=True)
@@ -45,7 +45,8 @@ class Library(JavaMeArtwork, JavaMePlayback):
         self.control_profiles = control_profiles or ControlProfileStore(
             DATA_ROOT / 'config' / 'control-profiles.json', atomic_json)
         self.asset_service = AssetService(self._artwork_recipes.backend_for_recipe,
-                                          save_workers=SAVE_THREADS)
+                                          save_workers=SAVE_THREADS,
+                                          recover_previous_artwork=recover_previous_artwork)
 
     def games(self):
         result = []

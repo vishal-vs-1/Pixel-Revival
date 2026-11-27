@@ -26,27 +26,31 @@ def read_source(path: Path, expected_id: str | None = None) -> Image.Image:
     return image
 
 
+def _register_original(game: _Game, path: Path) -> bool:
+    try:
+        resolved = path.resolve(strict=True)
+        relative = resolved.relative_to(game.workspace).as_posix()
+        image = read_source(resolved, path.stem)
+        source = SourceRecord(path.stem, image.width, image.height, relative, "legacy-original")
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return False
+    game.store.register_import_batch((source,), game.recipe.key, priority=0, queue_missing=True)
+    return True
+
+
 def reconcile_sources(game: _Game) -> int:
+    """Recover legacy source files only when reconciliation is requested."""
+    directory = game.workspace / "original-assets"
+    if not directory.is_dir():
+        return 0
     known = {source.source_id for source in game.store.list_sources()}
     registered = 0
-    directory = game.workspace / "original-assets"
-    if directory.is_dir():
-        for path in sorted(directory.glob("*.png")):
-            if len(path.stem) != 64 or path.stem in known:
-                continue
-            try:
-                resolved = path.resolve(strict=True)
-                resolved.relative_to(game.workspace)
-                image = read_source(resolved, path.stem)
-                source = SourceRecord(path.stem, image.width, image.height,
-                                      resolved.relative_to(game.workspace).as_posix(),
-                                      "legacy-original")
-                game.store.register_source(source)
-                game.store.enqueue(source.source_id, game.recipe.key)
-                known.add(source.source_id)
-                registered += 1
-            except (OSError, ValueError):
-                continue
+    for path in sorted(path for path in directory.iterdir() if path.match("*.png")):
+        if len(path.stem) != 64 or path.stem in known:
+            continue
+        if _register_original(game, path):
+            known.add(path.stem)
+            registered += 1
     return registered
 
 

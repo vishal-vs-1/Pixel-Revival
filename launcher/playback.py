@@ -22,6 +22,31 @@ def _read_json_limited(path, limit=65536):
 
 
 class LauncherPlayback:
+    def select_sprite_playback(self, selected):
+        if selected == 'image' and self.image_play.get():
+            self.poses_play.set(False)
+        elif selected == 'poses' and self.poses_play.get():
+            self.image_play.set(False)
+
+    def set_sprite_playback_options(self, image_available, poses_available, *, enabled=True):
+        for variable, checkbox, available in (
+                (self.image_play, self.image_play_checkbox, image_available),
+                (self.poses_play, self.poses_play_checkbox, poses_available)):
+            checkbox.configure(state='normal' if enabled and available else 'disabled')
+            if not available:
+                variable.set(False)
+
+    def _sprite_playback_options(self, game):
+        image = bool(getattr(self, 'image_play', None) and self.image_play.get())
+        poses = bool(getattr(self, 'poses_play', None) and self.poses_play.get())
+        panel = getattr(self, 'playable_artwork', None)
+        if panel is not None and panel.identity != GameRef.from_metadata(game):
+            image = poses = False
+        if GameRef.from_metadata(game).system == NES:
+            return {'player_replacement': image and not poses,
+                    'player_regenerated': poses}
+        return {'pose_mode': 'regenerated' if poses else 'record-replace' if image else 'record'}
+
     def _blocked_message(self):
         reason = getattr(self, 'busy_reason', '')
         if reason:
@@ -41,11 +66,15 @@ class LauncherPlayback:
     def start_comparison(self, game):
         """Launch both players; the Rust pair starts inline on the window thread."""
         ref = GameRef.from_metadata(game)
+        if ref.system == NES and ref.id in getattr(self, '_pose_importing', ()):
+            self.status.set('Wait for the recorded player poses to finish importing.')
+            return
         old = self.players.get(ref.id)
         if old and old[0].poll() is None:
             messagebox.showinfo('Already running',
                                 'This game is already open. Close its player window before launching it again.')
             return
+        playback_options = self._sprite_playback_options(game)
         self.busy = True
         self.busy_reason = 'starting the comparison players'
         self.status.set('Starting both comparison players…')
@@ -56,7 +85,7 @@ class LauncherPlayback:
         if in_tool:
             try:
                 process, log = self.library.launch(game, comparison=True,
-                                                   host_parent=self.root)
+                                                   host_parent=self.root, **playback_options)
             except Exception as error:
                 self.comparison_failed((game, error))
             else:
@@ -66,7 +95,7 @@ class LauncherPlayback:
         def worker():
             try:
                 process, log = self.library.launch(game, comparison=True,
-                                                   host_parent=self.root)
+                                                   host_parent=self.root, **playback_options)
             except Exception as error:
                 self.messages.put(('comparison_failed', (game, error)))
             else:
@@ -84,6 +113,8 @@ class LauncherPlayback:
         ref = GameRef.from_metadata(game)
         self.players[ref.id] = (process, log)
         self.player_refs[ref.id] = ref
+        if ref.system == NES:
+            self._recording_players[ref.id] = True
         if getattr(process, 'owns_window', False):
             # The Rust pair already owns one Tk window with both panes.
             process.view = process
@@ -113,6 +144,7 @@ class LauncherPlayback:
         ref = GameRef.from_metadata(game)
         self.players.pop(ref.id, None)
         self.player_refs.pop(ref.id, None)
+        getattr(self, '_recording_players', {}).pop(ref.id, None)
         self._finish_comparison_launch()
         try:
             self.library.set_player_state(ref, False)
@@ -140,14 +172,20 @@ class LauncherPlayback:
             if game.get('runtime_status')=='unsupported':
                 self.status.set('This NES cartridge is reported as unsupported by the Rust player.')
                 return
-            capture=not original
-            if capture and not self.library.enhanced_available(NES):
-                original, capture = True, False
+            capture=True
+            if not original and not self.library.enhanced_available(NES):
+                original = True
         self.launch_game(game, original, capture=capture,
-                         pose_mode="record" if ref.system != NES and not original else None)
+                         capture_poses=(ref.system == NES),
+                         **self._sprite_playback_options(game))
 
-    def launch_game(self,game,original=False,*,capture=False,pose_mode=None,comparison=False):
+    def launch_game(self,game,original=False,*,capture=False,pose_mode=None,comparison=False,
+                    player_replacement=False,player_recording=False,player_regenerated=False,
+                    capture_poses=False):
         ref=GameRef.from_metadata(game)
+        if ref.system == NES and ref.id in getattr(self, '_pose_importing', ()):
+            self.status.set('Wait for the recorded player poses to finish importing.')
+            return
         try:
             old = self.players.get(ref.id)
             if old and old[0].poll() is None:
@@ -155,14 +193,26 @@ class LauncherPlayback:
                 return
             if comparison:
                 process, log = self.library.launch(game, comparison=True,
-                                                   host_parent=self.root)
+                                                   host_parent=self.root,
+                                                   **self._sprite_playback_options(game))
             elif ref.system==NES:
+                options = {}
+                if player_replacement:
+                    options['player_replacement'] = True
+                if player_regenerated:
+                    options['player_regenerated'] = True
+                if player_recording:
+                    options['player_recording'] = True
+                if capture_poses:
+                    options['capture_poses'] = True
                 process,log=self.library.launch(game,original,capture=capture,
-                                                host_parent=self.root)
+                                                host_parent=self.root, **options)
             else:
                 options = {'pose_mode': pose_mode} if pose_mode else {}
                 process,log=self.library.launch(game, original, **options)
             self.players[ref.id] = (process,log)
+            if ref.system == NES and (player_recording or capture_poses or comparison):
+                self._recording_players[ref.id] = True
             self.player_refs[ref.id]=ref
             self._notify_player_started(ref,log)
             if comparison:
@@ -205,6 +255,7 @@ class LauncherPlayback:
             # "Already running" with a leaked player process.
             active = self.players.pop(ref.id, None)
             self.player_refs.pop(ref.id, None)
+            getattr(self, '_recording_players', {}).pop(ref.id, None)
             if active is not None:
                 process = active[0]
                 players = getattr(process, 'players', None)

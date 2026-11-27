@@ -24,7 +24,6 @@ class _Game:
     compat_pending: bool = True
     compat_recipe_key: str = ""
     compat_sources: set[str] | None = None
-    large_sprite_catalogue: bool = False
     player_active: bool = False
     metrics_path: Path | None = None
     live_enabled: bool = True
@@ -44,6 +43,7 @@ class _Game:
     resource_reason: str = ''
     removing: bool = False
     ready_sample_cursor: int = 0
+    defer_maintenance_during_play: bool = False
 
 
 @dataclass(frozen=True)

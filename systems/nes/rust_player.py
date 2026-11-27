@@ -2,22 +2,23 @@
 
 Original and Enhanced both render inside our Tk window. Enhanced composites
 the workspace's staged high-detail (HD) pack; with no pack it falls back to
-scaled native output instead of failing. Enhanced runs record unseen tiles for
-the next pack build when the loaded library exposes capture.
+scaled native output instead of failing. Standalone playback records unseen tiles
+for the next pack build when the loaded library exposes capture.
 """
 
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes as w
 import os
-import queue
 import threading
 import time
 from pathlib import Path
 
 from .metadata import DEFAULT_RENDER_SCALE
 from .rust_core import RustCore, RustCoreError
+from .rust_audio import RustAudioOut
+from .frame_presenter import FramePresenter
+from .thread_scheduling import playback_thread_priority
 
 _SAMPLE_RATE = 44100
 _FRAME_DT_NTSC = 1.0 / 60.0988
@@ -82,225 +83,6 @@ def _controls_to_keys(controls) -> dict[str, str]:
     return mapped
 
 
-class _WaveFormat(ctypes.Structure):
-    _fields_ = [("tag", w.WORD), ("channels", w.WORD), ("samples_per_sec", w.DWORD),
-                ("avg_bytes_per_sec", w.DWORD), ("block_align", w.WORD),
-                ("bits_per_sample", w.WORD), ("extra", w.WORD)]
-
-
-class _WaveHeader(ctypes.Structure):
-    _fields_ = [("data", ctypes.c_void_p), ("buffer_length", w.DWORD),
-                ("bytes_recorded", w.DWORD), ("user", ctypes.c_size_t),
-                ("flags", w.DWORD), ("loops", w.DWORD),
-                ("next", ctypes.c_void_p), ("reserved", ctypes.c_size_t)]
-
-
-class RustAudioOut:
-    """Best-effort streaming audio through winmm waveOut. Never raises after init.
-
-    If the device cannot open, the player runs muted (`playing` stays False)
-    instead of failing the game launch.
-    """
-
-    def __init__(self, sample_rate=_SAMPLE_RATE, buffer_samples=512, buffers=12):
-        self.sample_rate = sample_rate
-        self.buffer_samples = buffer_samples
-        self.buffers = buffers
-        self.playing = False
-        self.muted = True
-        self._failed = False
-        self._winmm = None
-        self._handle = w.HANDLE()
-        self._headers = []
-        self._events = []
-        self._queue: queue.Queue[bytes] = queue.Queue(maxsize=16)
-        self._stop = threading.Event()
-        self._thread = None
-        self._pending = bytearray()
-        self.fed_bytes = 0
-        self.written = 0
-        self.underruns = 0
-        self.dropped = 0
-        self.late_blocks = 0
-
-    def start(self, log=None):
-        try:
-            self._open()
-        except (OSError, RuntimeError) as error:
-            if log is not None:
-                try:
-                    log(f"Rust audio unavailable, running muted: {error}\n")
-                except OSError:
-                    pass
-            self._failed = True
-            self.muted = True
-            return
-        self.muted = False
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._feed, name="rust-nes-audio",
-                                        daemon=True)
-        self._thread.start()
-        self.playing = True
-
-    def _open(self):
-        winmm = ctypes.WinDLL("winmm", use_last_error=True)
-        winmm.waveOutOpen.argtypes = [ctypes.POINTER(w.HANDLE), w.UINT,
-                                      ctypes.c_void_p, ctypes.c_void_p,
-                                      ctypes.c_void_p, w.DWORD]
-        winmm.waveOutOpen.restype = w.UINT
-        winmm.waveOutPrepareHeader.argtypes = [w.HANDLE, ctypes.c_void_p, w.UINT]
-        winmm.waveOutPrepareHeader.restype = w.UINT
-        winmm.waveOutWrite.argtypes = [w.HANDLE, ctypes.c_void_p, w.UINT]
-        winmm.waveOutWrite.restype = w.UINT
-        winmm.waveOutUnprepareHeader.argtypes = [w.HANDLE, ctypes.c_void_p, w.UINT]
-        winmm.waveOutUnprepareHeader.restype = w.UINT
-        winmm.waveOutReset.argtypes = [w.HANDLE]
-        winmm.waveOutReset.restype = w.UINT
-        winmm.waveOutClose.argtypes = [w.HANDLE]
-        winmm.waveOutClose.restype = w.UINT
-        wave_out_proc = ctypes.WINFUNCTYPE(None, w.HANDLE, w.UINT, ctypes.c_void_p,
-                                           ctypes.c_void_p, ctypes.c_void_p)
-
-        def _callback(_handle, message, _instance, param1, _param2):
-            if message == 0x3BD:  # WOM_DONE; param1 is the WAVEHDR pointer
-                try:
-                    hdr = ctypes.cast(param1, ctypes.POINTER(_WaveHeader)).contents
-                    index = int(hdr.user)
-                except (ValueError, OSError):
-                    return
-                if 0 <= index < len(self._events):
-                    self._events[index].set()
-
-        self._callback = wave_out_proc(_callback)
-        fmt = _WaveFormat(1, 1, self.sample_rate, self.sample_rate * 2, 2, 16, 0)
-        handle = w.HANDLE()
-        result = winmm.waveOutOpen(ctypes.byref(handle), 0xFFFFFFFF, ctypes.byref(fmt),
-                                   ctypes.cast(self._callback, ctypes.c_void_p),
-                                   None, 0x00030000)
-        if result != 0:
-            raise RuntimeError(f"waveOutOpen failed ({result:#x})")
-        self._winmm = winmm
-        self._handle = handle
-        self._blocks = []
-        for index in range(self.buffers):
-            raw = (ctypes.c_byte * (self.buffer_samples * 2))()
-            header = _WaveHeader(ctypes.cast(raw, w.LPVOID), self.buffer_samples * 2,
-                                 0, index, 0, 0, None, 0)
-            if winmm.waveOutPrepareHeader(handle, ctypes.byref(header),
-                                          ctypes.sizeof(header)) != 0:
-                raise RuntimeError("waveOutPrepareHeader failed")
-            self._blocks.append((raw, header))
-            self._events.append(threading.Event())
-            self._events[-1].set()
-
-        # Prefill most buffers with silence so a short UI hitch cannot starve
-        # the device before the first game samples arrive. With 512-sample
-        # blocks, ten prefilled buffers give a ~116 ms cushion.
-        for index in range(self.buffers):
-            raw, header = self._blocks[index]
-            header.bytes_recorded = self.buffer_samples * 2
-            if winmm.waveOutWrite(handle, ctypes.byref(header),
-                                  ctypes.sizeof(header)) == 0:
-                self._events[index].clear()
-                self.written += 1
-
-    def feed(self, pcm16: bytes):
-        if self._failed or not pcm16:
-            return
-        self.fed_bytes += len(pcm16)
-        try:
-            self._queue.put_nowait(bytes(pcm16))
-        except queue.Full:
-            self.dropped += 1
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                self._queue.put_nowait(bytes(pcm16))
-            except queue.Full:
-                self.dropped += 1
-
-    def _feed(self):
-        """Fill whole device buffers from the queue.
-
-        Each frame produces about 735 samples, but a device buffer holds 1024.
-        Writing one frame per buffer padded every block with silence, so the
-        stream fell behind and music stuttered. Accumulate across chunks and
-        always hand the device exactly `buffer_samples` samples.
-        """
-        need = self.buffer_samples * 2
-        block_seconds = self.buffer_samples / self.sample_rate
-        index = 0
-        last_write = None
-        while not self._stop.is_set():
-            event = self._events[index]
-            if not event.wait(timeout=1.0) and not self._stop.is_set():
-                self.underruns += 1
-            if self._stop.is_set():
-                return
-            event.clear()
-            # Pull chunks until this buffer is full. One frame arrives every
-            # ~16.7 ms, so wait a little longer than a frame; the prefilled
-            # cushion (10 blocks ≈ 116 ms) covers this without starving.
-            while len(self._pending) < need and not self._stop.is_set():
-                try:
-                    # Waiting up to 50 ms is safe: ten prefilled blocks give a
-                    # ~116 ms cushion, so the device never runs dry meanwhile.
-                    self._pending.extend(self._queue.get(timeout=0.05))
-                except queue.Empty:
-                    break
-            raw, header = self._blocks[index]
-            take = min(len(self._pending), need)
-            if take:
-                ctypes.memmove(raw, bytes(self._pending[:take]), take)
-                del self._pending[:take]
-            if take < need:
-                ctypes.memset(ctypes.byref(raw, take), 0, need - take)
-                if not self._stop.is_set():
-                    self.underruns += 1
-            header.bytes_recorded = need
-            header.flags &= ~0x00000001
-            started = time.monotonic()
-            if last_write is not None and started - last_write > block_seconds * 2:
-                # A late full block is inaudible to the partial-fill counter.
-                self.late_blocks += 1
-            if self._winmm.waveOutWrite(self._handle, ctypes.byref(header),
-                                        ctypes.sizeof(header)) != 0:
-                event.set()
-                return
-            last_write = time.monotonic()
-            self.written += 1
-            index = (index + 1) % self.buffers
-
-    def stop(self):
-        self._stop.set()
-        thread, self._thread = self._thread, None
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=2.0)
-        try:
-            if self._winmm is not None and self._handle:
-                try:
-                    self._winmm.waveOutReset(self._handle)
-                except OSError:
-                    pass
-                for _raw, header in self._blocks:
-                    try:
-                        self._winmm.waveOutUnprepareHeader(self._handle,
-                                                          ctypes.byref(header),
-                                                          ctypes.sizeof(header))
-                    except OSError:
-                        pass
-                try:
-                    self._winmm.waveOutClose(self._handle)
-                except OSError:
-                    pass
-        finally:
-            self._winmm = None
-            self._handle = w.HANDLE()
-            self._blocks = []
-            self.playing = False
-
 
 def _float_to_int16(raw_floats: bytes) -> bytes:
     try:
@@ -355,20 +137,25 @@ class RustNesRuntime:
         """Open Original and Enhanced side by side in our own window."""
         from .rust_comparison import launch_comparison
 
-        return launch_comparison(self, game, source, workspace,
-                                 host_parent=host_parent, controls=controls,
-                                 **kwargs)
+        with self._lock:
+            if self._active is not None and self._active.poll() is None:
+                raise RuntimeError("Close the current NES game before comparing another game")
+            pair, log = launch_comparison(self, game, source, workspace,
+                                         host_parent=host_parent, controls=controls,
+                                         **kwargs)
+            self._active = pair
+            return pair, log
 
     def launch(self, game, source, workspace, *, original=False, host_parent=None,
-               controls=None, capture=False, **kwargs):
+               controls=None, capture=True, record_poses=False, pose_overlay=None,
+               **kwargs):
         if host_parent is None:
             raise RuntimeError("The Rust NES player needs the application window")
-        if capture and original:
-            raise RuntimeError("Tile capture is available in Enhanced play")
         workspace = Path(workspace)
         player = RustNesPlayer(self._core, game, Path(source), workspace,
                                original=original, controls=controls,
-                               host_parent=host_parent)
+                               host_parent=host_parent, record_poses=record_poses,
+                               pose_overlay=pose_overlay, capture=capture)
         with self._lock:
             if self._active is not None and self._active.poll() is None:
                 player.close()
@@ -392,7 +179,9 @@ class RustNesPlayer:
     """Tk window + worker threads driving one Rust core instance."""
 
     def __init__(self, core, game, source: Path, workspace: Path, *, original=True,
-                 controls=None, host_parent=None, embedded_parent=None):
+                 controls=None, host_parent=None, embedded_parent=None,
+                 record_poses=False, pose_overlay=None, audio_enabled=True,
+                 capture=False, capture_workspace=None, pose_workspace=None):
         import tkinter as tk
         from tkinter import ttk
         from PIL import Image, ImageTk
@@ -401,8 +190,19 @@ class RustNesPlayer:
         self._game = dict(game)
         self._source = Path(source)
         self._workspace = Path(workspace)
+        self._capture_workspace = Path(capture_workspace) if capture_workspace is not None else self._workspace
         self._controls = dict(controls) if controls else {}
         self._key_to_action = _controls_to_keys(self._controls) or dict(_TK_TO_ACTION)
+        self._record_poses = bool(record_poses)
+        self._pose_overlay = pose_overlay
+        self._pose_started = False
+        self._pose_samples = 0
+        self._pose_direction = 0
+        self._pose_actions = 0
+        self._chr_ram = str((game.get("nes") or {}).get("chr_kind", "")).lower() == "ram"
+        # Comparison saves stay private; its Enhanced recorder feeds the library.
+        recording_folder = Path(pose_workspace) if pose_workspace is not None else self._workspace
+        self._pose_journal = recording_folder / "playable-assets" / "live-recording.tsv"
         self._timer_active = False
         self._present_gap_last = time.monotonic()
         self._present_gap_max = 0.0
@@ -414,7 +214,7 @@ class RustNesPlayer:
         # which pump stage spikes on a stalled frame: emulation, frame copy,
         # audio convert/feed, GDI present, or the pacing sleep itself.
         self._stage_max = {"emulate": 0.0, "copy": 0.0, "audio": 0.0,
-                           "present": 0.0}
+                           "present": 0.0, "observe": 0.0, "overlay": 0.0}
         self._deadline_lag_max = 0.0
         self._last_sleep_lag_ms = 0.0
         self._direct_present = False
@@ -433,15 +233,21 @@ class RustNesPlayer:
         self._fps_at = time.monotonic()
         self._fps_base = 0
         self._fps = 0.0
+        self._present_fps = 0.0
+        self._present_base = 0
         self._tick_job = None
         self._tk_thread = threading.get_ident()
         self._log_path = (workspace / "logs" / f"rust-{time.time_ns()}.log")
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._held = set()
         self._mask = 0
+        self._applied_mask = None
+        self._comparison_clock = None
         self._pending_frame = None
         self._frame_lock = threading.Lock()
-        self._audio = RustAudioOut()
+        self._battery_lock = threading.Lock()
+        self._battery_generation = 0
+        self._audio = RustAudioOut(enabled=audio_enabled)
         self._pump = None
         self._enhanced = not original
         self._embedded = embedded_parent is not None
@@ -459,7 +265,12 @@ class RustNesPlayer:
         self._paint_blit_ms = 0.0
         self._native_view = None
         self._present_ms = 0.0
+        self._presenter = None
+        self._presented_frames = 0
+        self._skipped_presents = 0
         self._capture_armed = False
+        self._capture_hd = None
+        self._capture_hd_buf = None
 
         rom = self._source.read_bytes()
         self._write_log(f"ROM: {self._source} ({len(rom)} bytes)")
@@ -478,12 +289,15 @@ class RustNesPlayer:
             self._setup_enhanced()
             mode = "Enhanced HD" if self._hd is not None else "Enhanced (pack missing)"
             self._write_log(f"mode: {mode}")
+        elif capture:
+            self._setup_original_capture()
 
         try:
             self._build_ui(host_parent, embedded_parent)
         except BaseException:
             # Tk or native-window setup failed before the normal close path
             # exists; release the core handles here instead of leaking them.
+            self._close_capture_table()
             hd, self._hd = self._hd, None
             if hd is not None:
                 try:
@@ -608,12 +422,13 @@ class RustNesPlayer:
             pass
         try:
             stats = self._log_path.with_suffix(".stats.json")
-            import json as _json
-            import os as _os
+            from storage.atomic import atomic_json
             # Atomic replace: readers (launcher telemetry, probes) must never
             # see a half-written file.
-            temporary = stats.with_name(stats.name + ".part")
-            temporary.write_text(_json.dumps({"updated": time.time(), "fps": self._fps,
+            atomic_json(stats, {"updated": time.time(), "fps": self._fps,
+                                          "present_fps": self._present_fps,
+                                          "presented_frames": self._presenter.presented if self._presenter else self._presented_frames,
+                                          "skipped_presents": self._presenter.skipped if self._presenter else self._skipped_presents,
                                           "backend": "rust-nes",
                                           "scale": round(self._display_scale, 2),
                                           "audio_written": self._audio.written,
@@ -634,8 +449,7 @@ class RustNesPlayer:
                                           "fast_scaler_submit_ms": 0.0,
                                           "input_queue_p95_ms": 0.0,
                                           "gpu_scale_fallbacks": 0,
-                                          "gpu_scale_passes": 0}), encoding="utf-8")
-            _os.replace(temporary, stats)
+                                          "gpu_scale_passes": 0})
         except OSError:
             pass
 
@@ -656,17 +470,64 @@ class RustNesPlayer:
         return (self._workspace / "saves" / "mesen" / "battery" /
                 (self._source.stem + ".sav"))
 
-    def _write_battery_file(self, data: bytes):
+    def _write_battery_file(self, data: bytes, generation=None):
         """Write a battery snapshot from a background thread (no pacing)."""
         path = self._battery_path()
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if path.is_file() and path.read_bytes() == data:
-                return
-            path.write_bytes(data)
+            with self._battery_lock:
+                if generation is not None and generation != self._battery_generation:
+                    return
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if path.is_file() and path.read_bytes() == data:
+                    return
+                from uuid import uuid4
+                temporary = path.with_name(path.name + '.' + uuid4().hex + '.tmp')
+                try:
+                    temporary.write_bytes(data)
+                    os.replace(temporary, path)
+                finally:
+                    temporary.unlink(missing_ok=True)
             self._write_log(f"battery saved ({len(data)} bytes)")
         except OSError:
             pass
+
+    def _setup_original_capture(self):
+        if not self._core.capture_supported:
+            return
+        table = None
+        try:
+            # The existing capture export is populated by the HD frame API.
+            # An empty table observes tiles while the native framebuffer is displayed.
+            table = self._core.hd_create(2)
+            width, height = self._core.hd_output_size(table)
+            buffer = bytearray(width * height * 4)
+            self._core.hd_arm(self._handle, True)
+            self._core.capture_arm(self._handle, True)
+            self._capture_hd = table
+            self._capture_hd_buf = buffer
+            self._capture_armed = True
+            self._write_log('Original tile capture armed')
+        except (RustCoreError, ValueError, MemoryError) as error:
+            if table is not None:
+                try:
+                    self._core.hd_destroy(table)
+                except RustCoreError:
+                    pass
+            try:
+                self._core.hd_arm(self._handle, False)
+            except RustCoreError:
+                pass
+            self._write_log(f'Original tile capture unavailable: {error}')
+
+    def _close_capture_table(self):
+        table = getattr(self, '_capture_hd', None)
+        self._capture_hd = None
+        self._capture_hd_buf = None
+        if table is not None:
+            try:
+                self._core.hd_destroy(table)
+            except RustCoreError:
+                pass
 
     def _setup_enhanced(self):
         """Create the compositor table (pack optional) and arm tile capture.
@@ -681,6 +542,7 @@ class RustNesPlayer:
         if scale not in (2, 4):
             scale = DEFAULT_RENDER_SCALE
         entries = []
+        hd = None
         try:
             loaded = load_pack_tiles(self._workspace)
         except Exception as error:
@@ -719,6 +581,11 @@ class RustNesPlayer:
                             f"{'armed' if self._capture_armed else 'unavailable'}")
         except (RustCoreError, ValueError, MemoryError) as error:
             self._write_log(f"HD setup failed, using scaled native: {error}")
+            if hd is not None:
+                try:
+                    self._core.hd_destroy(hd)
+                except RustCoreError:
+                    pass
             self._hd = None
             self._hd_buf = None
             self._capture_armed = False
@@ -750,7 +617,7 @@ class RustNesPlayer:
             return
         header = Struct("<4s64s32sIHH192s")
         tile_struct = Struct("<QiI16sBBBB")
-        folder = self._workspace / ".runtime" / "nes-capture"
+        folder = getattr(self, '_capture_workspace', self._workspace) / ".runtime" / "nes-capture"
         folder.mkdir(parents=True, exist_ok=True)
         session = uuid4().hex
         written = 0
@@ -796,11 +663,79 @@ class RustNesPlayer:
             stream.write(b"".join(payload))
         temporary.replace(path)
 
+    def _record_observation(self, frame_number, observation):
+        """Append a bounded native sample and return it for the image overlay."""
+        if not self._record_poses or self._pose_samples >= 2400:
+            return
+        buttons = self._frame_mask & 0xFF
+        if not self._pose_started:
+            if not (buttons & 0xF3):
+                return
+            self._pose_started = True
+        direction = buttons & 0xF0
+        if direction:
+            self._pose_direction = direction
+        self._pose_actions |= buttons & 0x03
+        if frame_number % 3:
+            return
+        mask = (buttons & 0x0C) | self._pose_actions | (
+            direction or self._pose_direction)
+        self._pose_direction = 0
+        self._pose_actions = 0
+        from .pose_observation import capture_frame
+        frame = capture_frame(self._core, self._handle, frame_number, mask,
+                              observation, ram=self._chr_ram)
+        if not frame.sprites:
+            return frame
+        sprites = [f'{s.x},{s.y},{s.flags},{s.indices[0]},{s.indices[1]},{s.pattern}'
+                   + (f',{s.colors}' if s.colors is not None else '')
+                   for s in frame.sprites]
+        if frame.camera is not None:
+            sprites.insert(0, f'@camera={frame.camera[0]},{frame.camera[1]}')
+        line = "\t".join((str(frame.number), str(frame.buttons), str(frame.height),
+                          frame.palette, *sprites)) + "\n"
+        try:
+            with self._pose_journal.open("a", encoding="ascii") as stream:
+                stream.write(line)
+        except OSError:
+            self._record_poses = False
+            return frame
+        self._pose_samples += 1
+        return frame
+
     # -- lifecycle -----------------------------------------------------------
     def start(self):
+        if ((self._record_poses or self._pose_overlay is not None)
+                and getattr(self._core, 'pose_observation_supported', False) is True):
+            try:
+                self._core.pose_arm(self._handle)
+            except RustCoreError as error:
+                self._write_log(f'latched pose observation unavailable: {error}')
+        if self._record_poses:
+            try:
+                from .live_player_capture import RECORDING_VERSION
+                self._pose_journal.parent.mkdir(parents=True, exist_ok=True)
+                self._pose_journal.write_bytes(RECORDING_VERSION)
+                if not self._core.observation_supported:
+                    self._write_log("pose recording unavailable: rebuild the Rust player")
+                    self._record_poses = False
+            except OSError as error:
+                self._write_log(f"pose recording disabled: {error}")
+                self._record_poses = False
+        if self._pose_overlay is not None:
+            if not self._core.observation_supported:
+                self._write_log("pose replacement unavailable: rebuild the Rust player")
+                self._pose_overlay = None
+            else:
+                try:
+                    self._pose_overlay.bind(self._core, self._handle, self._chr_ram)
+                except (AttributeError, OSError):
+                    self._pose_overlay = None
         if not self._timer_active:
             _timer_begin()
             self._timer_active = True
+        if self._native_view is not None:
+            self._presenter = FramePresenter(self._present_native_frame, frame_interval=self._dt)
         # Start the frame pump first so audio samples queue while the device
         # opens; the feeder then begins with real data instead of silence.
         self._pump = threading.Thread(target=self._pump_loop, name="rust-nes-pump",
@@ -809,7 +744,7 @@ class RustNesPlayer:
         # Give the pump a couple of frames so the device opens with real audio
         # queued; otherwise a cold first launch can start with silence.
         deadline = time.monotonic() + 0.2
-        while time.monotonic() < deadline and self._audio._queue.qsize() < 2:
+        while self._audio.enabled and time.monotonic() < deadline and self._audio._queue.qsize() < 2:
             time.sleep(0.005)
         self._audio.start(log=self._write_log)
         self.window.after(50, self._tick)
@@ -828,6 +763,7 @@ class RustNesPlayer:
         if reason:
             self._write_log(reason)
 
+    @playback_thread_priority()
     def _pump_loop(self):
         try:
             deadline = time.monotonic()
@@ -846,6 +782,13 @@ class RustNesPlayer:
                     self._pump_stalls += 1
                 self._pump_gap_last = loop_top
                 body_start = loop_top
+                # Only the pump may mutate the emulator after startup. ctypes
+                # releases the GIL, so a Tk controller call here would race Rust.
+                self._frame_mask = (self._comparison_clock.next_input()
+                                    if self._comparison_clock is not None else self._mask)
+                if self._frame_mask != self._applied_mask:
+                    self._core.set_controller(self._handle, 0, self._frame_mask)
+                    self._applied_mask = self._frame_mask
                 perf = time.perf_counter
                 stage = self._stage_max
                 mark = perf()
@@ -856,7 +799,10 @@ class RustNesPlayer:
                     pending = (bytes(self._hd_buf),) + self._hd_size
                     copy_ms = (perf() - mark) * 1000.0
                 else:
-                    self._core.run_frame(self._handle)
+                    if self._capture_hd is not None:
+                        self._core.hd_run_frame(self._handle, self._capture_hd, self._capture_hd_buf)
+                    else:
+                        self._core.run_frame(self._handle)
                     emulate_ms = (perf() - mark) * 1000.0
                     mark = perf()
                     raw, width, height = self._core.framebuffer(self._handle)
@@ -875,32 +821,41 @@ class RustNesPlayer:
                 audio_ms = (perf() - mark) * 1000.0
                 if audio_ms > stage["audio"]:
                     stage["audio"] = audio_ms
-                view = self._native_view
-                if view is not None and self._native_ready.is_set():
-                    # Present from the emulation thread so Tk's event loop
-                    # cannot hold a ready frame back.
+                observation = None
+                pose_frame = None
+                mark = perf()
+                if self._record_poses or self._pose_overlay is not None:
                     try:
-                        started = time.perf_counter()
-                        view.present(pending[0], pending[1], pending[2])
-                        present_ms = (time.perf_counter() - started) * 1000.0
-                        self._present_ms = present_ms
-                        if present_ms > stage["present"]:
-                            stage["present"] = present_ms
-                        self._direct_present = True
-                        self._present_size = (pending[1], pending[2])
-                        now = time.monotonic()
-                        gap = (now - self._present_gap_last) * 1000.0
-                        if gap > self._present_gap_max:
-                            self._present_gap_max = gap
-                        if gap > 30.0:
-                            self._present_stalls += 1
-                            # No file write here: logging from the pacing
-                            # thread on every stall stalls the next frame too.
-                            # Counters plus per-second stage maxima in the
-                            # stats carry the same signal without disk IO.
-                        self._present_gap_last = now
+                        observation = self._core.observation(self._handle)
+                    except RustCoreError:
+                        observation = None
+                if observation is not None and self._record_poses:
+                    try:
+                        pose_frame = self._record_observation(frames, observation)
+                    except (OSError, ValueError) as error:
+                        self._write_log(f"pose recording disabled: {error}")
+                        self._record_poses = False
+                stage['observe'] = max(stage['observe'], (perf() - mark) * 1000.0)
+                mark = perf()
+                if observation is not None and self._pose_overlay is not None:
+                    try:
+                        pending = (self._pose_overlay.apply(
+                            pending[0], pending[1], pending[2], observation,
+                            frame=pose_frame, frame_number=frames, buttons=self._frame_mask),
+                            pending[1], pending[2])
+                    except (OSError, ValueError) as error:
+                        self._write_log(f"pose replacement disabled: {error}")
+                        self._pose_overlay = None
+                stage['overlay'] = max(stage['overlay'], (perf() - mark) * 1000.0)
+                view = self._native_view
+                # Tk can retire a failed presenter between these checks and
+                # submission; keep this frame's worker reference stable.
+                presenter = self._presenter
+                if (view is not None and self._native_ready.is_set()
+                        and presenter is not None):
+                    if presenter.submit(pending):
                         pending = None
-                    except (OSError, AttributeError):
+                    else:
                         self._direct_present = False
                 else:
                     self._direct_present = False
@@ -917,43 +872,34 @@ class RustNesPlayer:
                         data = None
                     if data:
                         snapshot = bytes(data)
+                        self._battery_generation += 1
                         threading.Thread(
                             target=self._write_battery_file,
-                            args=(snapshot,), name="rust-nes-battery",
+                            args=(snapshot, self._battery_generation), name="rust-nes-battery",
                             daemon=True).start()
                 deadline += self._dt
                 wait = deadline - time.monotonic()
                 self._last_sleep_lag_ms = 0.0
-                if wait > 0.002:
-                    # Sleep the bulk, then spin the last ~2 ms: plain
-                    # time.sleep overshoots by ~1 ms per frame, and that
-                    # drift accumulates into a catch-up burst every second
-                    # or two. The spin costs a little CPU on this thread.
-                    time.sleep(max(0.0, wait - 0.002))
-                    spin_until = deadline
-                    while time.monotonic() < spin_until:
-                        pass
-                    # How late the wakeup was past the deadline (negative
-                    # means early).
+                if wait > 0:
+                    # Release the GIL for the whole wait so comparison and the
+                    # audio feeder can run. Keep the absolute sample deadline.
+                    self._stop.wait(wait)
                     lag = (time.monotonic() - deadline) * 1000.0
                     self._last_sleep_lag_ms = lag
                     if lag > self._deadline_lag_max:
                         self._deadline_lag_max = lag
-                elif wait < -self._dt * 0.75:
-                    # More than ~3/4 frame late (e.g. a blocking GDI BitBlt
-                    # under DWM): resync instead of bursting. Bursting shows
-                    # the next frame almost immediately, which reads as a
-                    # freeze-then-jump; one long frame is far less visible.
-                    # The audio feeder's ~116 ms cushion covers the skipped
-                    # catch-up frame.
+                elif wait < -0.1:
+                    # Recover a short scheduling delay without losing audio
+                    # samples; discard debt only after a genuine long stall.
                     lag = -wait * 1000.0
                     if lag > self._deadline_lag_max:
                         self._deadline_lag_max = lag
-                    deadline = time.monotonic() + self._dt
-                elif time.monotonic() - deadline > 0.1:
-                    # Resync only after a real stall; otherwise keep catching
-                    # up so audio production does not permanently run slow.
                     deadline = time.monotonic()
+        except threading.BrokenBarrierError:
+            expected = (self._stop.is_set() or
+                        (self._comparison_clock is not None and self._comparison_clock.closed))
+            self._finish(0 if expected else 71,
+                         "Comparison frame synchronization stopped")
         except RustCoreError as error:
             self._error = str(error)
             self._finish(71, f"Rust player failed: {error}")
@@ -961,15 +907,39 @@ class RustNesPlayer:
             self._error = str(error)
             self._finish(71, f"Rust player failed: {error}")
 
+    def _present_native_frame(self, data, width, height):
+        started = time.perf_counter()
+        self._native_view.present(data, width, height)
+        self._present_ms = (time.perf_counter() - started) * 1000.0
+        self._stage_max['present'] = max(self._stage_max['present'], self._present_ms)
+        self._direct_present = True
+        self._present_size = (width, height)
+        now = time.monotonic()
+        gap = (now - self._present_gap_last) * 1000.0
+        self._present_gap_max = max(self._present_gap_max, gap)
+        if gap > 30.0:
+            self._present_stalls += 1
+        self._present_gap_last = now
+
     def _tick(self):
         self._tick_job = None
         if self._exit_code is not None:
-            self._destroy()
+            self.close()
             return
         if self._error is not None:
             self.status.set(f"Could not continue: {self._error}")
-            self._destroy()
+            self.close()
             return
+        if self._presenter is not None and self._presenter.error is not None:
+            self._write_log(f'Native presentation failed: {self._presenter.error}; using Tk')
+            if not self._close_presenter():
+                self._tick_job = self.window.after(10, self._tick)
+                return
+            self._direct_present = False
+            self._native_ready.clear()
+            if self._native_view is not None:
+                self._native_view.close()
+                self._native_view = None
         with self._frame_lock:
             pending = self._pending_frame
             self._pending_frame = None
@@ -1018,7 +988,11 @@ class RustNesPlayer:
                 self._write_log(f"present stall {gap:.1f} ms")
             self._present_gap_last = now
         if now - self._fps_at >= 1.0:
-            self._fps = (self._frames - self._fps_base) / max(0.001, now - self._fps_at)
+            elapsed = max(0.001, now - self._fps_at)
+            self._fps = (self._frames - self._fps_base) / elapsed
+            displayed = self._presenter.presented if self._presenter else self._presented_frames
+            self._present_fps = (displayed - self._present_base) / elapsed
+            self._present_base = displayed
             self._fps_base = self._frames
             self._fps_at = now
             self._write_log("heartbeat")
@@ -1083,10 +1057,6 @@ class RustNesPlayer:
                      "A": 0x01, "B": 0x02, "START": 0x08, "SELECT": 0x04}.get(action, 0)
         if mask != self._mask:
             self._mask = mask
-            try:
-                self._core.set_controller(self._handle, 0, mask)
-            except RustCoreError:
-                pass
 
     def _key_down(self, event):
         action = self._key_to_action.get(event.keysym.lower())
@@ -1127,6 +1097,7 @@ class RustNesPlayer:
 
     def toggle_pause(self):
         self._paused = not self._paused
+        self._audio.set_paused(self._paused)
         if self.pause_button is not None:
             try:
                 self.pause_button.configure(text="Resume" if self._paused else "Pause")
@@ -1139,13 +1110,38 @@ class RustNesPlayer:
     def terminate(self):
         self.close()
 
+    def _close_presenter(self):
+        presenter = self._presenter
+        if presenter is None:
+            return True
+        if not presenter.close():
+            return False
+        # Final telemetry must retain counts after the worker is detached.
+        self._presented_frames = presenter.presented
+        self._skipped_presents = presenter.skipped
+        self._presenter = None
+        return True
+
     def close(self):
-        if self._exit_code is not None:
+        if getattr(self, "_closed", False):
             return
         self._stop.set()
-        pump, self._pump = self._pump, None
+        if self._comparison_clock is not None:
+            self._comparison_clock.close()
+        pump = self._pump
         if pump is not None and pump is not threading.current_thread():
             pump.join(timeout=2.0)
+            if pump.is_alive():
+                # A slow native call still owns the pointers. Retry on Tk
+                # instead of freeing memory beneath a running emulator.
+                self.window.after(20, self.close)
+                return
+        self._pump = None
+        if not self._close_presenter():
+            # Screen resources remain owned until the last native blit returns.
+            self.window.after(20, self.close)
+            return
+        self._closed = True
         self._flush_capture()
         # Pump is joined above, so a synchronous save here cannot hitch play.
         try:
@@ -1153,7 +1149,8 @@ class RustNesPlayer:
         except RustCoreError:
             data = None
         if data:
-            self._write_battery_file(bytes(data))
+            self._battery_generation += 1
+            self._write_battery_file(bytes(data), self._battery_generation)
         self._audio.stop()
         self._finish(0)
         if self._tick_job is not None:
@@ -1193,6 +1190,7 @@ class RustNesPlayer:
                 view.close()
             except OSError:
                 pass
+        self._close_capture_table()
         # Embedded players own only their pane; the comparison window closes
         # itself once both panes are gone.
         try:

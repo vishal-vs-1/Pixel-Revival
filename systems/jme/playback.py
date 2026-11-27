@@ -58,7 +58,8 @@ class JavaMePlayback:
                     saves.mkdir(parents=True)
                     copy_playback_files(folder / 'saves', saves)
                 pair = ComparisonPlayers(lambda original: self._launch(
-                    dict(game), original, comparison_saves=root / ('original' if original else 'enhanced')),
+                    dict(game), original, pose_mode=None if original else (pose_mode or 'record'),
+                    comparison_saves=root / ('original' if original else 'enhanced')),
                     ready_paths=(root / 'original.ready', root / 'enhanced.ready'))
                 self._players[game['id']] = pair
                 return pair, pair.logs[-1]
@@ -88,13 +89,14 @@ class JavaMePlayback:
                 f'-Djme.stats={log_path.with_suffix(".stats.json")}',
                 f"-Djme.textures={self.texture_dir(folder,game.get('backend','pixel'))}",
                 f'-Djme.scale={1 if original else render_scale}',
-                f'-Djme.captureArtwork={str(not original and comparison_saves is None).lower()}']
+                f'-Djme.captureArtwork={str(comparison_saves is None or not original).lower()}']
         args += [f'-Djme.gpuPreference={gpu_mode}',f'-Djme.expectedGpu={expected["name"] if expected else ""}']
         args += runtime_arguments(game['id'],game)
-        if pose_mode in ('record', 'replace'):
-            args.extend(PoseArtwork(folder).launch_arguments(pose_mode == 'record'))
+        if pose_mode in ('record', 'record-replace', 'replace'):
+            args.extend(PoseArtwork(folder).launch_arguments(pose_mode != 'replace'))
+            args.append(f'-Djme.replacePoses={str(pose_mode != "record").lower()}')
         elif pose_mode == 'regenerated':
-            args.extend(PoseArtwork(folder).launch_arguments(False, regenerated=True))
+            args.extend(PoseArtwork(folder).launch_arguments(True, regenerated=True))
         if control_profile_arg is not None:
             args.append(control_profile_arg)
         launch_options = {}

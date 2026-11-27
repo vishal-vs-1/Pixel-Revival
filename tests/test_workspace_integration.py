@@ -119,6 +119,30 @@ def test_integrated_package_publication_waits_until_player_closes(tmp_path, monk
         service.close()
 
 
+def test_manual_sync_recovers_saved_originals_in_integrated_workspace(tmp_path, monkeypatch):
+    from runtime_assets.contracts import image_source_id
+
+    workspace = tmp_path / ('5' * 64)
+    plugin = FixtureIntegration()
+    plugin.discover = Mock(return_value=0)
+    service = AssetService(lambda _recipe: Upscaler())
+    monkeypatch.setattr(service, '_start', lambda: None)
+    try:
+        service.register_game(workspace, pixel_recipe(), game={'id': workspace.name},
+                              integration=plugin, paused=True)
+        image = Image.new('RGBA', (8, 8), (40, 20, 60, 255))
+        key = image_source_id(image)
+        directory = workspace / 'original-assets'
+        directory.mkdir()
+        image.save(directory / (key + '.png'))
+        assert service.reconcile(workspace.name) == 1
+        plugin.discover.assert_called_once()
+        assert service.stats(workspace.name)['QUEUED'] == 1
+        assert service.reconcile(workspace.name) == 0
+    finally:
+        service.close()
+
+
 def test_duplicate_workspace_id_rejected_before_custom_admission(tmp_path):
     workspace = tmp_path / ("3" * 64)
     other = tmp_path / "elsewhere" / workspace.name

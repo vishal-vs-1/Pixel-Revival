@@ -118,12 +118,17 @@ impl HdTable {
             }
             let sx = (record.col as usize) * s;
             let sy = (record.row as usize) * s;
+            // Native-pixel coordinates already include flips; the smaller
+            // high-detail texels inside that pixel must follow the same flip.
+            let flip_x = record.sprite && record.sprite_flags & 0x40 != 0;
+            let flip_y = record.sprite && record.sprite_flags & 0x80 != 0;
             for dy in 0..s {
                 let dest_y = y * s + dy;
-                let src_y = sy + dy;
+                let src_y = sy + if flip_y { s - 1 - dy } else { dy };
                 for dx in 0..s {
                     let dest_x = x * s + dx;
-                    let o = (src_y * art.size + sx + dx) * 4;
+                    let src_x = sx + if flip_x { s - 1 - dx } else { dx };
+                    let o = (src_y * art.size + src_x) * 4;
                     let alpha = art.rgba[o + 3] as u32;
                     if alpha == 0 {
                         continue;
@@ -195,6 +200,45 @@ mod tests {
         let mut out = vec![0u32; 1024 * 960];
         assert!(!table.composite(&records, &native, &mut out));
         assert!(out.iter().all(|&p| p == 0));
+    }
+
+    #[test]
+    fn sprite_art_mirrors_every_texel_at_each_output_scale() {
+        for scale in [1usize, 2, 4] {
+            let size = 8 * scale;
+            let mut art = Vec::with_capacity(size * size * 4);
+            for y in 0..size {
+                for x in 0..size {
+                    art.extend_from_slice(&[x as u8, y as u8, 19, 255]);
+                }
+            }
+            for flags in [0, 0x40, 0x80, 0xC0] {
+                let mut table = HdTable::new(scale as u32);
+                assert!(table.add(true, 9, 0xFF162738, art.clone(), size));
+                let mut records = Vec::new();
+                for y in 0..8 {
+                    for x in 0..8 {
+                        records.push(HdPixel {
+                            x, y, chr: 9, pal: 0xFF162738,
+                            col: if flags & 0x40 != 0 { 7 - x as u8 } else { x as u8 },
+                            row: if flags & 0x80 != 0 { 7 - y as u8 } else { y as u8 },
+                            sprite: true, ram: false, sprite_flags: flags,
+                        });
+                    }
+                }
+                let native = blank_native(BLACK);
+                let width = NATIVE_W * scale;
+                let mut out = vec![0; width * NATIVE_H * scale];
+                assert!(table.composite(&records, &native, &mut out));
+                for y in 0..size {
+                    for x in 0..size {
+                        let expected_x = if flags & 0x40 != 0 { size - 1 - x } else { x };
+                        let expected_y = if flags & 0x80 != 0 { size - 1 - y } else { y };
+                        assert_eq!(out[y * width + x], 0xFF000013 | ((expected_x as u32) << 16) | ((expected_y as u32) << 8));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -80,6 +80,15 @@ struct StatusFlags {
     vertical_blank: bool,
 }
 
+#[derive(Clone)]
+pub struct PpuObservation {
+    pub large_sprites: bool,
+    pub sprite_pattern_addr: u16,
+    pub oam: [u8; 0x100],
+    pub palette: [u8; 0x20],
+}
+
+
 pub struct Ppu {
     framebuffer: Vec<u32>,
     /// Raw palette indices + emphasis bits, in Mesen's 16-bit PPU output format
@@ -126,6 +135,7 @@ pub struct Ppu {
     hd_active: bool,
     hd_is_ram: bool,
     hd_pixels: Vec<crate::hd::HdPixel>,
+    pose_observer: crate::pose::PoseObserver,
 
     sprite_count: u32,
     secondary_oam_addr: u32,
@@ -208,6 +218,7 @@ impl Ppu {
             hd_active: false,
             hd_is_ram: false,
             hd_pixels: Vec::new(),
+            pose_observer: crate::pose::PoseObserver::default(),
             sprite_count: 0,
             secondary_oam_addr: 0,
             sprite0_visible: false,
@@ -284,6 +295,7 @@ impl Ppu {
         self.sprite_ram_addr = 0;
         // VENDORED-DELTA (HD recording): drop any in-flight tile log.
         self.hd_pixels.clear();
+        self.pose_observer.clear();
 
         self.low_bit_shift = 0;
         self.high_bit_shift = 0;
@@ -353,6 +365,18 @@ impl Ppu {
     /// Advance one PPU dot. Returns the scanline index when a new line starts.
     pub fn tick(&mut self, cart: &mut Cartridge) -> Option<i16> {
         self.total_dots = self.total_dots.wrapping_add(1);
+        // Read the live address after HUD splits; no extra emulated bus access.
+        if self.pose_observer.active() && self.scanline == 120 && self.cycle == 1
+                && self.rendering_enabled {
+            let v = self.video_ram_addr;
+            let x = ((v & 0x1f) * 8 + self.x_scroll as u16 + ((v & 0x400) >> 2)) & 511;
+            let row = (v >> 5) & 31;
+            // The vertical nametable period is 240 lines, not 256 pixels.
+            if row < 30 {
+                let y = row * 8 + ((v >> 12) & 7) + if v & 0x800 != 0 { 240 } else { 0 };
+                self.pose_observer.camera_sample(x, y);
+            }
+        }
         let mut started_line = None;
 
         if self.cycle > 339 {
@@ -369,9 +393,11 @@ impl Ppu {
             started_line = Some(self.scanline);
 
             if self.scanline == -1 {
+                self.pose_observer.begin();
                 self.status_flags.sprite_overflow = false;
                 self.status_flags.sprite0_hit = false;
             } else if self.scanline == 240 {
+                self.pose_observer.finish();
                 // At the start of vblank the PPU bus address returns to v.
                 self.set_bus_address(cart, self.video_ram_addr);
                 self.send_frame();
@@ -607,6 +633,26 @@ impl Ppu {
     pub fn framebuffer(&self) -> &[u32] {
         &self.framebuffer
     }
+
+    /// VENDORED-DELTA (pose recording): copy the sprite/OAM and palette state
+    /// used by the Python player-pose detector. Observe only; rendering is
+    /// unchanged when nobody calls this.
+    pub fn observation(&self) -> PpuObservation {
+        PpuObservation {
+            large_sprites: self.flags.large_sprites,
+            sprite_pattern_addr: self.flags.sprite_pattern_addr,
+            oam: self.sprite_ram,
+            palette: self.palette_ram,
+        }
+    }
+
+    pub fn pose_arm(&mut self, active: bool) { self.pose_observer.arm(active); }
+
+    pub fn pose_cells(&self) -> impl Iterator<Item = &crate::pose::PoseCell> {
+        self.pose_observer.cells()
+    }
+
+    pub fn pose_camera(&self) -> Option<(u16, u16)> { self.pose_observer.camera() }
 
     pub fn scanline(&self) -> i16 {
         self.scanline
@@ -1492,6 +1538,17 @@ impl Ppu {
             }
 
             if self.scanline >= 0 {
+                if self.pose_observer.active() && self.sprite_index < self.sprite_tiles.len() as u32 {
+                    // Reuse fetched bytes because a later debug read can see another bank.
+                    let fetched = self.sprite_tiles[self.sprite_index as usize];
+                    let part = (line_offset / 8) as u8;
+                    let screen_part = if self.flags.large_sprites && vertical_mirror { 1 - part } else { part };
+                    let palette_base = (((attributes & 3) as usize) << 2) | 0x10;
+                    self.pose_observer.row(sprite_x, sprite_y.saturating_add(screen_part * 8),
+                        attributes, addr, [self.palette_ram[palette_base + 1] & 63,
+                        self.palette_ram[palette_base + 2] & 63, self.palette_ram[palette_base + 3] & 63],
+                        fetched.low_byte, fetched.high_byte);
+                }
                 // Sprites fetched on the pre-render line are not shown on
                 // scanline 0.
                 let x = sprite_x as usize;
@@ -1691,6 +1748,7 @@ impl Ppu {
     }
 
     pub fn load_state(&mut self, r: &mut StateReader<'_>) -> StateResult<()> {
+        self.pose_observer.clear();
         let region = match r.u8()? {
             1 => Region::Pal,
             2 => Region::Dendy,

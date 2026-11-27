@@ -128,6 +128,40 @@ class LauncherOperations:
                 self.messages.put(('idle',ApplicationEvent('idle',ref.system,ref.id)))
         threading.Thread(target=worker,daemon=True).start()
 
+    def sync_artwork(self):
+        if self.busy or self.pending_imports:
+            self.status.set('Finish the current library operation before syncing artwork.')
+            return
+        game = self.game()
+        if not game:
+            return
+        game = dict(game)
+        if any(player.poll() is None for player, _ in self.players.values()):
+            self.status.set('Close the game players before syncing artwork.')
+            return
+        ref = GameRef.from_metadata(game)
+        if ref.id in self.deleting_games or ref.id in getattr(self, '_pose_importing', ()):
+            self.status.set('Wait for this game to finish updating before syncing artwork.')
+            return
+        self.busy = True
+        self.busy_reason = f'syncing {game["name"]} artwork'
+        self.status.set(f'Syncing artwork for {game["name"]}.')
+        self.progress.start()
+
+        def worker():
+            try:
+                count = self.library.sync_artwork(game)
+                detail = f'Sync complete for {game["name"]}. {count} new artwork items queued.'
+                self.messages.put(('scoped_status', ApplicationEvent(
+                    'status', ref.system, ref.id, detail)))
+            except Exception as error:
+                self.messages.put(('scoped_error', ApplicationEvent(
+                    'error', ref.system, ref.id, str(error))))
+            finally:
+                self.messages.put(('idle', ApplicationEvent('idle', ref.system, ref.id)))
+
+        threading.Thread(target=worker, name='artwork-sync', daemon=True).start()
+
     def open_folder(self):
         game = self.game()
         if game:

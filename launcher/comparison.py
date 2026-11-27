@@ -48,6 +48,7 @@ class ComparisonWindow:
         self.attached = False
         self.input_ready = False
         self.closing = False
+        self.fullscreen = False
         self.input_error = None
         self.held = set()
         self.events = Queue(maxsize=128)
@@ -61,6 +62,7 @@ class ComparisonWindow:
                   f"original={pair.players[0].pid} enhanced={pair.players[-1].pid}")
 
         self.window = tk.Toplevel(root)
+        self.window.configure(bg='#121c29')
         self.window.title(f"{title} · Original / Enhanced")
         if self.embed_players:
             width = min(1400, self.window.winfo_screenwidth() * 9 // 10)
@@ -76,7 +78,7 @@ class ComparisonWindow:
                     "Click this window, then use the keys; both games follow.")
         self.hint = tk.StringVar(master=self.window, value=hint)
         ttk.Label(self.window, textvariable=self.hint, padding=(10, 6),
-                  wraplength=460, justify="left").pack(anchor="w")
+                  wraplength=460, justify="left").pack(fill="x")
         self.board = tk.Frame(self.window, bg="black", takefocus=True)
         self.board.pack(fill="both", expand=True)
         self.panes = []
@@ -139,7 +141,10 @@ class ComparisonWindow:
             except Empty:
                 continue
             try:
-                self.pair.send_key(token, pressed)
+                if token is None:
+                    self.pair.request_close()
+                else:
+                    self.pair.send_key(token, pressed)
             except (OSError, ValueError) as error:
                 self.input_error = str(error)
                 return
@@ -153,7 +158,18 @@ class ComparisonWindow:
             self.enqueued_count = getattr(self, "enqueued_count", 0) + 1
 
     def _press(self, event):
+        if event.keysym == 'F11' and getattr(self, 'embed_players', True):
+            self._release_all()
+            self.fullscreen = not getattr(self, 'fullscreen', False)
+            self.window.attributes('-fullscreen', self.fullscreen)
+            self.window.after_idle(self._fit_panes)
+            return 'break'
         if event.keysym == "Escape":
+            if getattr(self, 'fullscreen', False):
+                self.fullscreen = False
+                self.window.attributes('-fullscreen', False)
+                self.window.after_idle(self._fit_panes)
+                return 'break'
             self.close()
             return "break"
         token = comparison_key(event.keysym)
@@ -161,6 +177,12 @@ class ComparisonWindow:
             self.held.add(token)
             self._enqueue(token, True)
         return "break"
+
+    def _fit_panes(self):
+        if self.closing:
+            return
+        for index, pane in enumerate(self.panes):
+            self._resize(index, pane.winfo_width(), pane.winfo_height())
 
     def _release(self, event):
         token = comparison_key(event.keysym)
@@ -203,7 +225,7 @@ class ComparisonWindow:
                     self.input_ready = True
                     self._log("input ready; shared controls active")
                     if getattr(self, "embed_players", True):
-                        self.hint.set("Shared controls · Esc closes both players")
+                        self.hint.set("Shared controls / F11 fullscreen / Esc back or close")
                     else:
                         self.hint.set("Shared controls · click here, then use the keys · Esc closes both players")
                     self.board.focus_set()
@@ -244,6 +266,10 @@ class ComparisonWindow:
             self.side_status[index].set(f"{label}: {state}")
 
     def _attach(self, players):
+        # Startup windows can exist before the game renderer is initialized.
+        if (getattr(self, 'embed_players', True) and
+                not all(path.is_file() for path in getattr(self.pair, 'ready_paths', ()))):
+            return
         self.windows = self.native.find_players({player.pid for player in players})
         if len(self.windows) != 2:
             return
@@ -259,15 +285,16 @@ class ComparisonWindow:
             self.native.embed(window, pane.winfo_id())
             self.native.fit(window, pane.winfo_width(), pane.winfo_height(), show=True)
             self._log(f"attach pid={player.pid} window={window} "
+                      f"class={self.native.renderer_kind(window)} "
                       f"style={self.native.style(window):#x} parent={self.native.parent_of(window)}")
         self.attached = True
 
     def _enforce(self, players):
         """Keep embedded panes borderless; restore tiled windows if minimized."""
         found = self.native.find_players({player.pid for player in players})
-        if len(found) != len(players):
-            return
         if not getattr(self, "embed_players", True):
+            if len(found) != len(players):
+                return
             left, right = self.native.halves()
             for player, rect in zip(self.pair.players, (left, right)):
                 if player.poll() is not None:
@@ -284,7 +311,13 @@ class ComparisonWindow:
         for player, pane in zip(self.pair.players, self.panes):
             if player.poll() is not None:
                 continue
-            window = found[player.pid]
+            # Embedded renderers leave EnumWindows. Keep their valid handles
+            # rather than replacing them with a JVM helper's top-level window.
+            current = self.windows.get(player.pid)
+            window = (current if self.native.owns_window(current, player.pid)
+                      and self.native.renderer_kind(current) is not None else found.get(player.pid))
+            if window is None:
+                continue
             if self.windows.get(player.pid) != window:
                 self.native.embed(window, pane.winfo_id())
                 self.windows[player.pid] = window
@@ -308,9 +341,20 @@ class ComparisonWindow:
         self.deadline = time.monotonic() + 8
         self._release_all()
         self.hint.set("Closing both players…")
+        if hasattr(self.pair, 'request_close'):
+            # Reparenting during GLFW teardown can crash glfwPollEvents.
+            # Keep children attached and let each player close itself.
+            self._enqueue(None, False)
+            if self.tick_job is None:
+                self.tick_job = self.window.after(75, self._tick)
+            return
         alive = {player.pid for player in self.pair.players if player.poll() is None}
         for handle in (self.native.find_players(alive) | self.windows).values():
-            self.native.close(handle)
+            try:
+                self.native.close(handle)
+            except OSError as error:
+                # One disappearing surface must not leave the other JVM alive.
+                self._log(f"close window={handle}: {error}")
         if self.tick_job is None:
             self.tick_job = self.window.after(75, self._tick)
 

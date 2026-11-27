@@ -47,12 +47,13 @@ class PlayableArtworkPanel(ttk.Frame):
         ttk.Label(self, textvariable=self.hint, wraplength=390).pack(fill='x', pady=(4, 8))
 
         actions = self._row()
+        self.actions = actions
         self.image_button = self._button(actions, 'Choose image', self.choose_image)
-        self.play_button = self._button(actions, 'Play with image', self.play)
+        self.record_button = self._button(actions, 'Record poses', self.record)
+        self.enemy_button = self._button(actions, 'Find enemies', self.find_enemies)
 
         generation = self._row()
         self.regenerate_button = self._button(generation, 'Regenerate all poses', self.regenerate)
-        self.play_regenerated_button = self._button(generation, 'Play with regenerated poses', self.play_regenerated)
 
         self.review_tools = self._row()
         ttk.Checkbutton(self.review_tools, text='Review captured artwork', variable=self.show_candidates,
@@ -93,6 +94,7 @@ class PlayableArtworkPanel(ttk.Frame):
 
     def refresh(self, game):
         if self.backend is None:
+            self.app.set_sprite_playback_options(False, False)
             self.review_tools.pack_forget()
             if self._packed:
                 self.pack_forget()
@@ -105,11 +107,20 @@ class PlayableArtworkPanel(ttk.Frame):
         if identity != self.identity:
             self.identity, self.selection_key = identity, None
             self.show_candidates.set(False)
+            self.app.image_play.set(False)
+            self.app.poses_play.set(False)
         nes = self.backend is self.nes
         if nes:
             self.review_tools.pack_forget()
-        elif not self.review_tools.winfo_manager():
-            self.review_tools.pack(fill='x', pady=(4, 0), after=self.play_button.master)
+            if not self.record_button.winfo_manager():
+                self.record_button.pack(side='left', padx=(0, 6))
+            if not self.enemy_button.winfo_manager():
+                self.enemy_button.pack(side='left', padx=(0, 6))
+        else:
+            self.record_button.pack_forget()
+            self.enemy_button.pack_forget()
+            if not self.review_tools.winfo_manager():
+                self.review_tools.pack(fill='x', pady=(4, 0), after=self.actions)
         idle = bool(game) and not self.app.busy
         player = self.app.players.get(identity.id) if identity else None
         can_generate = idle and not (player and player[0].poll() is None)
@@ -144,12 +155,14 @@ class PlayableArtworkPanel(ttk.Frame):
             self.regenerated_preview.configure(text='Regenerated' if self.regenerated_preview.picture else '')
             for button, available in (
                 (self.image_button, bool(image and (not selected or selected.replaceable))), (self.clear_button, bool(image and image.is_file())),
-                (self.play_button, custom or bool(replaceable and default)),
                 (self.default_button, default and custom), (self.confirm_button, selected is not None),
             ):
                 button.configure(state='normal' if idle and available else 'disabled')
             self.regenerate_button.configure(state='normal' if can_generate and confirmed else 'disabled')
-            self.play_regenerated_button.configure(state='normal' if can_generate and view.regenerated and replaceable else 'disabled')
+            playable = idle and self.app.play_button.instate(['!disabled'])
+            self.app.set_sprite_playback_options(
+                custom or bool(replaceable and default),
+                bool(view.regenerated and replaceable), enabled=playable)
         except (OSError, ValueError, KeyError, TypeError) as error:
             self.hint.set(str(error))
             self.pose_picker.configure(state='disabled', values=())
@@ -158,9 +171,10 @@ class PlayableArtworkPanel(ttk.Frame):
             self._show_image(self.replacement_preview, None)
             self._show_image(self.regenerated_preview, None)
             self.regenerated_preview.configure(text='')
-            for button in (self.image_button, self.clear_button, self.play_button, self.default_button,
-                           self.confirm_button, self.regenerate_button, self.play_regenerated_button):
+            for button in (self.image_button, self.clear_button, self.default_button,
+                           self.confirm_button, self.regenerate_button):
                 button.configure(state='disabled')
+            self.app.set_sprite_playback_options(False, False)
 
     def _show_image(self, label, path):
         label.picture = None
@@ -210,8 +224,19 @@ class PlayableArtworkPanel(ttk.Frame):
     def record(self):
         self._apply(self.backend.record)
 
-    def play(self):
-        self._apply(self.backend.play)
+    def find_enemies(self):
+        if not hasattr(self.backend, 'find_enemies'):
+            return
+        game = self.app.game()
+        if not game or self.app.busy:
+            return
+        try:
+            candidates = self.backend.find_enemies(game)
+            self.app.status.set(
+                f'Enemy review: {len(candidates)} recurring sprite layout(s) found. '
+                'Use tools/nes_enemy_probe.py for the image sheet.')
+        except (OSError, ValueError, RuntimeError) as error:
+            messagebox.showerror('Discover enemies', str(error), parent=self)
 
     def regenerate(self):
         if self.regenerate_button.instate(['disabled']):
@@ -247,6 +272,3 @@ class PlayableArtworkPanel(ttk.Frame):
             messagebox.showerror('Could not regenerate player poses', error, parent=self)
         else:
             self.app.status.set(f'Regenerated {count} player poses.')
-
-    def play_regenerated(self):
-        self._apply(self.backend.play_regenerated)

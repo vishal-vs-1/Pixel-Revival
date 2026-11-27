@@ -2,6 +2,7 @@
 
 import queue
 import time
+import threading
 from tkinter import messagebox
 from systems.contracts import GameRef, JAVA_ME, NES
 from systems.ui_events import ApplicationEvent
@@ -62,6 +63,8 @@ class LauncherEvents:
                 self.refresh()
             elif kind == 'poses_regenerated':
                 self.playable_artwork.regenerated(*value)
+            elif kind == 'poses_imported':
+                self._finish_pose_import(*value)
             elif kind == 'error':
                 if isinstance(value,ApplicationEvent):
                     label=SYSTEM_LABELS[value.system]
@@ -99,6 +102,9 @@ class LauncherEvents:
                 if (ref and ref.system == self.visible_system_id
                         and (selected := self.game_if_selected()) and selected['id'] == key):
                     self.playable_artwork.refresh(selected)
+                if key in getattr(self, '_recording_players', {}):
+                    self._recording_players.pop(key, None)
+                    self._start_pose_import(key)
                 if result:
                     reason = ('The GPU player could not continue. Try CPU · compatibility in the Compatibility tab, or check your graphics driver.'
                               if result == 71 and ref is not None and ref.system==JAVA_ME else
@@ -111,6 +117,34 @@ class LauncherEvents:
         self.start_pending()
         self.row_actions.set_enabled(not self.busy and not self.pending_imports)
         self.root.after(120, self.poll)
+
+    def _start_pose_import(self, key):
+        if not hasattr(self, '_pose_importing'):
+            self._pose_importing = set()
+        self._pose_importing.add(key)
+        self.status.set('Finding player poses in the recorded gameplay.')
+
+        def worker():
+            try:
+                count = self.nes_library.import_playable_recording(key)
+            except (OSError, ValueError, KeyError, RuntimeError, TypeError) as error:
+                self.messages.put(('poses_imported', (key, 0, str(error))))
+            else:
+                self.messages.put(('poses_imported', (key, count, None)))
+
+        threading.Thread(target=worker, name='nes-pose-import', daemon=True).start()
+
+    def _finish_pose_import(self, key, count, error):
+        self._pose_importing.discard(key)
+        if error:
+            self.status.set(f'Could not import recorded player poses. {error}')
+        elif count:
+            self.status.set(f'Added {count} player poses from gameplay.')
+        else:
+            self.status.set('No new player poses. Move back and forth several times, then close the game.')
+        selected = self.game_if_selected()
+        if self.visible_system_id == NES and selected and selected['id'] == key:
+            self.playable_artwork.refresh(selected)
 
     def _handle_imported_event(self,event):
         ref=event.ref

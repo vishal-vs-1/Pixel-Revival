@@ -155,6 +155,27 @@ class RustCore:
         except AttributeError:
             # Older build without capture exports; playback still works.
             self._capture_supported = False
+        try:
+            lib.rs_observation.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte),
+                                           ctypes.c_size_t, ctypes.c_char_p,
+                                           ctypes.c_size_t]
+            lib.rs_observation.restype = ctypes.c_int
+            self._observation_supported = True
+        except AttributeError:
+            self._observation_supported = False
+        self._pose_handles = set()
+        self._pose_cameras = {}
+        try:
+            lib.rs_pose_version.argtypes = []
+            lib.rs_pose_version.restype = ctypes.c_uint
+            lib.rs_pose_arm.argtypes = [ctypes.c_void_p, ctypes.c_ubyte, ctypes.c_char_p, ctypes.c_size_t]
+            lib.rs_pose_arm.restype = ctypes.c_int
+            lib.rs_pose_frame.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte),
+                                          ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+            lib.rs_pose_frame.restype = ctypes.c_int
+            self._pose_observation_supported = lib.rs_pose_version() == 2
+        except AttributeError:
+            self._pose_observation_supported = False
         self.path = path
 
     @staticmethod
@@ -181,6 +202,8 @@ class RustCore:
         return handle
 
     def destroy(self, handle: int):
+        self._pose_handles.discard(handle)
+        self._pose_cameras.pop(handle, None)
         self._lib.rs_destroy(handle)
 
     def run_frame(self, handle: int):
@@ -337,6 +360,57 @@ class RustCore:
         if self._lib.rs_tile_pattern(handle, int(index), out) != 0:
             raise RustCoreError(f"tile_pattern failed for tile {index}")
         return bytes(out)
+
+    @property
+    def observation_supported(self) -> bool:
+        return bool(getattr(self, "_observation_supported", False))
+
+    def observation(self, handle: int):
+        """Return (large_sprites, sprite_base, oam, palette) from the core."""
+        if not self.observation_supported:
+            raise RustCoreError("this Rust build has no pose observation")
+        out = (ctypes.c_ubyte * 291)()
+        err = self._err()
+        got = int(self._lib.rs_observation(handle, out, 291, err, 256))
+        if got != 291:
+            raise RustCoreError(
+                f"observation failed: {err.value.decode('utf-8', 'replace')}")
+        large = bool(out[0])
+        bank = int(out[1]) | (int(out[2]) << 8)
+        oam = bytes(out[3:3 + 0x100])
+        palette = bytes(out[3 + 0x100:3 + 0x100 + 0x20])
+        return large, bank, oam, palette
+
+    @property
+    def pose_observation_supported(self):
+        return bool(getattr(self, '_pose_observation_supported', False))
+
+    def pose_arm(self, handle, active=True):
+        if not self.pose_observation_supported:
+            return
+        err = self._err()
+        self._check(self._lib.rs_pose_arm(handle, bool(active), err, 256), err, 'pose_arm')
+        if active:
+            self._pose_handles.add(handle)
+        else:
+            self._pose_handles.discard(handle)
+            self._pose_cameras.pop(handle, None)
+
+    def pose_frame(self, handle):
+        if handle not in self._pose_handles:
+            return None
+        out = (ctypes.c_ubyte * (4 + 128 * 25))()
+        err = self._err()
+        count = self._check(self._lib.rs_pose_frame(handle, out, len(out), err, 256), err, 'pose_frame')
+        if count > 128:
+            raise RustCoreError('pose_frame exceeds its record limit')
+        data = bytes(out)
+        camera = int.from_bytes(data[:2], 'little'), int.from_bytes(data[2:4], 'little')
+        self._pose_cameras[handle] = camera if all(value < 512 for value in camera) else None
+        return [data[4 + i * 25:4 + (i + 1) * 25] for i in range(count)]
+
+    def pose_camera(self, handle):
+        return self._pose_cameras.get(handle)
 
     def standard_palette(self) -> bytes:
         if not self.capture_supported:

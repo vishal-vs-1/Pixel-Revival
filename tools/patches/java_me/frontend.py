@@ -223,6 +223,21 @@ def patch_frontend(SOURCE):
 
 def patch_comparison_frontend(text):
     if 'ComparisonInput.start(' in text:
+        old_end = '\t\t\t}));\n'
+        new_end = ('\t\t\t}), () -> javax.swing.SwingUtilities.invokeLater(() -> '
+                   'main.dispatchEvent(new WindowEvent(main, WindowEvent.WINDOW_CLOSING))));\n')
+        if new_end not in text:
+            start = text.index('\t\t\tComparisonInput.start(')
+            end = text.index(old_end, start)
+            text = text[:end] + text[end:].replace(old_end, new_end, 1)
+        # Upgrade previously patched vendor trees too; do not duplicate the hook.
+        start = text.index('\t\t\tComparisonInput.start(')
+        run = text.index('\t\t\tMobile.getPlatform().runJar();\n')
+        if run < start:
+            anchor = '\t\t\tMobile.getPlatform().runJar();\n'
+            text = text[:run] + text[run:].replace(anchor, '', 1)
+            end = text.index(new_end, run) + len(new_end)
+            text = text[:end] + anchor + text[end:]
         return text
     text = _replace_exactly_once(text,
         'import org.recompile.mobile.AwtControlProfileInput;\n',
@@ -234,7 +249,7 @@ def patch_comparison_frontend(text):
             anchor + '\t\t\t\tif(ComparisonInput.enabled()) { return; }\n',
             'comparison keyboard ownership')
     anchor = '\t\t\tMobile.getPlatform().runJar();\n'
-    text = _replace_exactly_once(text, anchor, anchor + '''
+    text = _replace_exactly_once(text, anchor, '''
 \t\t\tComparisonInput.start((token, pressed) -> javax.swing.SwingUtilities.invokeLater(() -> {
 \t\t\t\tKeyEvent event = ComparisonInput.awtEvent(lcd, token, pressed);
 \t\t\t\tif(event == null) { return; }
@@ -245,7 +260,7 @@ def patch_comparison_frontend(text):
 \t\t\t\t\tif(jmeControlProfileInput.isCustom()) { jmeControlProfileInput.keyReleased(event); }
 \t\t\t\t\telse { releaseKey(event); }
 \t\t\t\t}
-\t\t\t}));
-''', 'comparison input after game load')
+\t\t\t}), () -> javax.swing.SwingUtilities.invokeLater(() -> main.dispatchEvent(new WindowEvent(main, WindowEvent.WINDOW_CLOSING))));
+''' + anchor, 'comparison input before game start')
     return text.replace('jmeControlProfileInput.releaseHeldKeys();',
                         'if(!ComparisonInput.enabled()) { jmeControlProfileInput.releaseHeldKeys(); }')

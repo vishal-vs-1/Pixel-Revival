@@ -1,61 +1,45 @@
-# Asset discovery and decoder contracts
+# Asset discovery and persistence
 
-Java ME import and play use the same generic asset pipeline. Import reads standard images, embedded PNGs, PNGs with a pair-swapped header, and supported palette-based sprites from validated containers. At runtime, emulator hooks observe decoded immutable images, stable offscreen snapshots, and sampled raw RGB blocks. The game continues to run its own decoder.
+Current contracts, 26 November 2026. See [Project flow](PROJECT_FLOW.md) for playback and [Status](STATUS.md) for coverage limits.
 
-| Responsibility | Implementation | Contract |
-|---|---|---|
-| Select common import readers | `systems.jme.resources.decoding.DecoderRegistry` | Readers accept recognized, bounded formats. Import reads data only. |
-| Normalize and persist source images | `AssetSink`, `runtime_assets` | Pixel identity, dimensions, alpha policy, and provenance are shared by import and runtime discovery. Archive paths never become output paths. |
-| Read ordinary images | `StandardImages` | Pillow decodes supported images without executing game code. |
-| Extract embedded PNGs | `EmbeddedImages` | Complete chunk boundaries and CRCs must validate. |
-| Restore a pair-swapped PNG header | `SwappedHeaderImages` | The stored signature and header must match. The restored PNG must decode and its chunk CRCs must validate. |
-| Unpack a recognized container | `systems.jme.resources.gameloft` | Index tables, bounds, and decompressed output are validated and limited. Unknown payloads stay opaque. |
-| Extract packed Gameloft sprites | `GameloftSpriteImages` | Parse the declared module, frame, animation and palette tables. Decode supported indexed, run-length and alpha streams and preserve archive, block, module and palette provenance. |
-| Decode raw 8-bit palette indices offline | `IndexedImages` | An explicit layout identifies dimensions, frame count, RGB palette, and any transparent palette index. Payload lengths and index ranges must match. |
-| Enhance prepared or observed images | `AssetService` and backend implementations | Work is deduplicated by source identity and recipe, persists across launches, and runs outside the game/render thread. |
-| Display cached artwork | `TextureRepository`, `GpuRenderer`, `Enhancement` | Async cache lookup; updates are staged at frame boundaries and rejected when source revision or recipe is stale. |
+## Java ME sources
 
-## Persistence
+Import reads recognized data without executing the game. Runtime hooks let the game decode its own resources and observe eligible images afterward.
 
-`asset-decoding.json` records the JAR hash, pipeline version, registered common readers, recognized stages, and unresolved resource information. `catalogue.json` records normalized sources and their provenance. `original-assets/` contains source PNGs; `textures-cache/` and the ready manifest contain validated recipe-specific outputs. Legacy source images remain valid inputs even when they were produced by an older extractor.
+| Source | Contract |
+|---|---|
+| Standard images | Decode with Pillow through the common registry |
+| Embedded/header-swapped PNGs | Validate signature, complete chunks, CRCs and decoded bounds |
+| Recognized packed containers/sprites | Validate indexes, lengths, decompression and palette/frame limits |
+| Explicit raw indexed layouts | Require dimensions, palette and valid pixel indexes |
+| Runtime draws | Observe eligible immutable images, regions, offscreen snapshots or sampled RGB data |
 
-Source preparation is reused only when the JAR, reader versions, and indexed files still match. Enhancement recipe changes reuse known source pixels and create separate cached variants. Historical cache files with unknown provenance remain legacy variants; they are not silently relabeled as results of a new recipe.
+Readers live in `systems/jme/resources/`; normalized images pass through `AssetSink`. Pixel identity deduplicates source images and recipe jobs. Keep archive/module/frame/palette provenance; archive paths must not become output paths. Unknown formats stay opaque. Coverage of recognized containers does not mean every resource or future scene is decoded.
 
-Adding the same JAR again or preparing its artwork updates a catalogue created before the packed sprite reader. Sprite palette variants are included in the catalogue, and identical decoded pixels share one PNG and one job per recipe. The decoder limits each block and each import by pixel count and image count. `asset-decoding.json` reports decoded, empty, unsupported and budget-limited sprite blocks under `features.gameloft_sprites`.
+`asset-decoding.json` records source/pipeline identity and decoder results. `catalogue.json` retains source provenance; `original-assets/` stores normalized inputs. SQLite owns job state, while validated outputs and ready manifests feed the player. Recipe changes reuse source pixels without relabeling old outputs.
 
-AI Cartoon prepares ordinary image sources immediately. When an import contains at least 512 packed sprite records, it indexes every decoded sprite and queues packed-only sprites when Enhanced Play observes those pixels. The Artwork status shows how many sources are available on demand. Existing textures and observed sources retain their priority. AI batches for these catalogues are capped at 32 images so pause and playback can take effect between batches.
+## Updates and recovery
+
+Java ME capture events register sources directly. A successful validated conversion records its result in SQLite before publication. Available decoded Java ME artwork can be queued before play; live work is admitted only through resource/performance guards.
+
+There is no automatic repeated full original-image catalog scan. Event polling, database recovery and bounded integrated NES ingestion still run where enabled. A missed or legacy file can be recovered through import/reconciliation or **Artwork > Sync** while players are closed. Sync scans the selected game's originals/pending captures and deduplicates existing entries. Interrupted jobs recover from stored rows; completed outputs are reused.
+
+## NES sources
+
+The Rust player captures tiles and palettes into bounded chunks. `systems/nes/` converts them into source images plus bindings; the shared queue prepares artwork. After play, ready CHR-ROM replacements can be published into an HD pack for a later launch. The loaded pack is fixed for that session. General CHR-RAM tile enhancement remains limited.
+
+Pose capture is a separate contract: the optional native observer retains original sprite bytes and palettes at fetch time, including RAM-held patterns. It is bounded to 128 complete eight-pixel cells per frame. Journal version 2 includes optional per-cell palettes and camera data; version 1 remains readable. Pose candidates are not proof of player identity. See [current limitations](STATUS.md).
 
 ## Standalone extraction
-
-Run this from the project root to extract artwork independently of the launcher and emulator.
 
 ```powershell
 python -m tools.decode_jme_artwork game.jar build/decoded-art
 ```
 
-Supply the dimensions and palette for raw pixel indices with `--indexed-layout layout.json`. The JSON file contains an array of entries.
+For raw palette indexes, pass `--indexed-layout layout.json` with an array of entries such as:
 
 ```json
-[
-  {
-    "resource": "art.bin",
-    "palette": "palette.bin",
-    "width": 32,
-    "height": 24,
-    "frames": 3,
-    "transparent_index": 0
-  }
-]
+[{"resource":"art.bin","palette":"palette.bin","width":32,"height":24,"frames":3,"transparent_index":0}]
 ```
 
-Each pixel byte indexes an RGB triple. Frames are contiguous and row-major. `frames` defaults to one, and omitting `transparent_index` makes all entries opaque. The standalone command accepts layouts and writes PNGs with the artwork pipeline's standard source IDs.
-
-## Coverage and extension
-
-This pipeline recognizes stored images and supported sprite modules, including modules for scenes that have yet to be played. Composed frames, unsupported binary layouts and effects can still be discovered during play. Packed binary data may also represent maps or sound. Continuously changing screen buffers remain on the fast render path.
-
-Add new shared readers only for formats validated by structure and bounds. Emit normalized images through `AssetSink`; preserve animation and frame provenance without changing game coordinates. Keep format support independent from the upscaler, renderer, UI, and input handling.
-
-## NES tile discovery
-
-NES Enhanced observes tiles and palettes from the Rust core. The player writes bounded capture chunks and the NES adapter turns those records into source PNGs and tile bindings. The same shared artwork queue prepares Fast Pixel or AI Cartoon outputs. Once the player closes, the pack generator can publish ready replacements for the next Enhanced launch. Pack bindings preserve tile and palette identity. Coverage depends on the scenes captured during play.
+Pixels index RGB triples; frames are contiguous and row-major. `frames` defaults to one and transparency is optional. Add shared readers only when structure and bounds establish the format; keep decoding independent from the enhancer and renderer.

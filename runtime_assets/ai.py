@@ -55,18 +55,40 @@ def _run(binary, source, output, workdir, *, model=MODEL, processing_threads=1, 
     # since the scheduler admitted this group or Python prepared its inputs.
     processing_threads=min(processing_threads,budget.processing_threads)
     before=gpu_memory(device)
-    process=subprocess.Popen([str(binary),'-i',str(source),'-o',str(output),'-s',str(SCALE),
+    from runtime_assets.ai_trace import AiDeviceTrace
+    trace = AiDeviceTrace()
+    if trace.enabled:
+        from graphics.gpu_policy import settings, devices
+        trace.record('inference_start', preference=settings()['enhance_gpu'],
+                     inventory=devices(), selected_device=device, gpu_arguments=gpu_args,
+                     images=count, processing_threads=processing_threads, model=model,
+                     gpu_budget_bytes=budget.gpu_budget_bytes,
+                     auto_selected_integrated=(settings()['enhance_gpu']=='auto' and
+                                              bool(device and device['kind']=='integrated')))
+    try:
+        process=subprocess.Popen([str(binary),'-i',str(source),'-o',str(output),'-s',str(SCALE),
                            '-n',model,'-m',str(binary.parent/'models'),'-t','128',
                            '-j',f'1:{processing_threads}:1',*gpu_args],
                           cwd=binary.parent,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
                           creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)|getattr(subprocess,'BELOW_NORMAL_PRIORITY_CLASS',0))
+    except Exception as error:
+        trace.record('launch_failed', error=str(error))
+        raise
+    trace.record('process_started', native_pid=getattr(process, 'pid', None))
     guard=ModelMemoryGuard(process,device,budget,baseline_used=before['used_bytes'] if before else None)
     guard.start()
     try:
         try:stdout,stderr=process.communicate(timeout=180*max(1,min(count,4)))
         except subprocess.TimeoutExpired:
-            process.kill();process.communicate();raise
+            process.kill();stdout,stderr=process.communicate()
+            trace.record('timeout', native_pid=getattr(process, 'pid', None), returncode=process.returncode,
+                         stdout=stdout[:6000], stderr=stderr[:6000])
+            raise
     finally:guard.close()
+    trace.record('process_finished', native_pid=getattr(process, 'pid', None), returncode=process.returncode,
+                 stdout=stdout[:6000], stderr=stderr[:6000],
+                 stdout_tail=stdout[-2000:], stderr_tail=stderr[-2000:],
+                 memory_guard_reason=guard.reason, peak_extra_gpu_bytes=guard.peak_extra_bytes)
     if guard.reason:raise ResourcePressure(guard.reason)
     if process.returncode:
         raise RuntimeError('Local AI could not run on this GPU: '+stderr[-1200:])

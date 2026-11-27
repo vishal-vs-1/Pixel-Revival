@@ -98,9 +98,9 @@ def test_java_character_artwork_routes_record_and_replacement(root, tmp_path, mo
     (artwork.folder('selected') / 'all-poses').touch()
     panel = app.playable_artwork
     panel.refresh(app.game_if_selected())
-    assert panel.play_button.instate(['disabled'])
+    assert app.image_play_checkbox.instate(['disabled'])
     assert len(panel.choices) == 1
-    panel.play_button.invoke()
+    app.image_play_checkbox.invoke()
     app.launch_game.assert_not_called()
 
     panel.show_candidates.set(True)
@@ -109,15 +109,17 @@ def test_java_character_artwork_routes_record_and_replacement(root, tmp_path, mo
     panel._select_pose(None)
     panel.confirm_button.invoke()
     assert artwork.selected(pose.stem).is_file()
-    assert panel.play_button.instate(['!disabled'])
+    assert app.image_play_checkbox.instate(['!disabled'])
 
     app.enhance_play.set(True)
     app.play()
-    panel.play_button.invoke()
-    assert [call.kwargs['pose_mode'] for call in app.launch_game.call_args_list] == ['record', 'replace']
+    app.image_play_checkbox.invoke()
+    assert app.launch_game.call_count == 1
+    app.play()
+    assert [call.kwargs['pose_mode'] for call in app.launch_game.call_args_list] == ['record', 'record-replace']
 
     monkeypatch.setattr(library, 'regenerate_playable_poses', lambda game_id: artwork.regenerate(), raising=False)
-    assert panel.play_regenerated_button.instate(['disabled'])
+    assert app.poses_play_checkbox.instate(['disabled'])
     panel.regenerate_button.invoke()
     deadline = time.monotonic() + 5
     while app.busy and time.monotonic() < deadline:
@@ -125,8 +127,10 @@ def test_java_character_artwork_routes_record_and_replacement(root, tmp_path, mo
         time.sleep(0.01)
     assert not app.busy
     assert panel.regenerated_preview.picture
-    assert panel.play_regenerated_button.instate(['!disabled'])
-    panel.play_regenerated_button.invoke()
+    assert app.poses_play_checkbox.instate(['!disabled'])
+    app.poses_play_checkbox.invoke()
+    assert not app.image_play.get()
+    app.play()
     assert app.launch_game.call_args.kwargs['pose_mode'] == 'regenerated'
 
     app.system_buttons[NES].invoke()
@@ -344,11 +348,21 @@ def test_nes_play_offers_enhanced_capture_and_original_modes(root,tmp_path,monke
     monkeypatch.setattr(app, 'launch_game', launch)
     app.play(game=game)
     assert launch.call_args.args == (game, True)
-    assert launch.call_args.kwargs == {'capture': False, 'pose_mode': None}
+    assert launch.call_args.kwargs == {
+        'capture': True,
+        'capture_poses': True,
+        'player_replacement': False,
+        'player_regenerated': False,
+    }
     app.enhance_play.set(True)
     app.play(game=game)
     assert launch.call_args.args == (game, False)
-    assert launch.call_args.kwargs == {'capture': True, 'pose_mode': None}
+    assert launch.call_args.kwargs == {
+        'capture': True,
+        'capture_poses': True,
+        'player_replacement': False,
+        'player_regenerated': False,
+    }
     app.library.close(timeout=0.1)
 
 

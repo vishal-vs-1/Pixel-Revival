@@ -10,7 +10,7 @@ from PIL import Image
 
 from runtime_assets.contracts import (MAX_SOURCE_PIXELS, Recipe, SourceRecord,
                                       SourceKind, image_source_id, ncnn_recipe, pixel_recipe)
-from runtime_assets.packed_sources import has_large_sprite_catalogue, on_demand_packed, packed_only_sources, wait_for_capture
+from runtime_assets.packed_sources import has_large_sprite_catalogue, packed_only_sources
 from runtime_assets.store import AssetStore
 
 _IMPORT_BATCH_SIZE = 256
@@ -136,7 +136,6 @@ class LegacyCacheImporter:
         legacy_sources = {path.stem for path in self._images(self.workspace / old_dir)} if known_recipe else set()
         pending = []
         packed_ids = packed_only_sources(self.workspace) if has_large_sprite_catalogue(game) else set()
-        hold_packed = on_demand_packed(selected_recipe)
         freshly_written = fresh_sources or {}
         if packed_ids:
             self.store.classify_packed_sources(packed_ids)
@@ -160,7 +159,7 @@ class LegacyCacheImporter:
                 pending.append(source)
                 if len(pending) == _IMPORT_BATCH_SIZE:
                     queued += self.store.register_import_batch(pending, selected_recipe.key, priority,
-                                                               queue_missing=queue_missing, hold_packed=hold_packed)
+                                                               queue_missing=queue_missing)
                     pending.clear()
                 continue
             self.store.register_source(source)
@@ -194,14 +193,12 @@ class LegacyCacheImporter:
                         elif adopted:
                             ai_reused += 1
             if queue_missing and (known_recipe is None or known_recipe.key != selected_recipe.key or not adopted):
-                if not (wait_for_capture(source, selected_recipe)
-                        and wait_for_capture(self.store.get_source(source.source_id), selected_recipe)):
-                    queued += int(self.store.enqueue(source.source_id, selected_recipe.key,
-                                                     priority, force=True))
+                queued += int(self.store.enqueue(source.source_id, selected_recipe.key,
+                                                 priority, force=True))
 
         if pending:
             queued += self.store.register_import_batch(pending, selected_recipe.key, priority,
-                                                       queue_missing=queue_missing, hold_packed=hold_packed)
+                                                       queue_missing=queue_missing)
 
         # Preserve and count every cache whose source/recipe could not be verified.
         legacy_unknown = 0

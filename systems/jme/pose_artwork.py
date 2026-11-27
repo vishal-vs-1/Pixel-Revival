@@ -105,7 +105,12 @@ class PoseArtwork:
                 raise ValueError('Regenerate all confirmed player poses before playing.')
             # The existing player reads the same folder layout and fits each
             # drawing against its matching source, including procedural poses.
-            return [f'-Djme.playerPoses={folder}', '-Djme.recordPoses=false']
+            args = [f'-Djme.playerPoses={folder}', f'-Djme.recordPoses={str(record).lower()}']
+            if record:
+                for name in ('poses', 'images', 'selected', 'suggested', 'drawn'):
+                    self.folder(name).mkdir(parents=True, exist_ok=True)
+                args.append(f'-Djme.poseCaptureRoot={self.root}')
+            return args
         for name in ('poses', 'images', 'selected', 'suggested', 'drawn'):
             self.folder(name).mkdir(parents=True, exist_ok=True)
         return [f'-Djme.playerPoses={self.root}', f'-Djme.recordPoses={str(record).lower()}']

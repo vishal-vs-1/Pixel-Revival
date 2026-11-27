@@ -35,7 +35,7 @@ class NesLibrary:
     presentation = SystemPresentation("Choose an NES cartridge", (("NES cartridge", "*.nes"),))
 
     def __init__(self, root, *, asset_service, runtime=None, register_artwork=None, inspector=None,
-                 write_metadata=atomic_json, control_profiles=None):
+                 write_metadata=atomic_json, control_profiles=None, playable_assets=None):
         root = Path(root)
         self._storage = GameStorage(root / "library", root / "rendered-games", source_filename="game.nes")
         self._service = asset_service
@@ -44,9 +44,11 @@ class NesLibrary:
         self._inspector = inspector if inspector is not None else NesRomInspector()
         self._write_metadata = write_metadata
         self._control_profiles = control_profiles
+        self.playable_assets = playable_assets
         self._lock = threading.RLock()
         self._deleting = set()
         self._players = {}
+        self._pose_imports = set()
 
     @property
     def control_profiles(self):
@@ -137,6 +139,8 @@ class NesLibrary:
             return sorted(result, key=lambda game: game["name"].casefold())
 
     def _require_idle(self, identity):
+        if identity in self._pose_imports:
+            raise RuntimeError("Wait for recorded NES player poses to finish importing.")
         if identity in self._deleting:
             raise RuntimeError("This NES game is being deleted.")
         process = self._players.get(identity)
@@ -283,6 +287,18 @@ class NesLibrary:
             controls = dict(resolution.profile.bindings)
             runtime_options = dict(kwargs)
             comparison = runtime_options.pop("comparison", False)
+            recording = bool(runtime_options.pop("player_recording", False)
+                             or runtime_options.pop("capture_poses", False))
+            replacement = bool(runtime_options.pop("player_replacement", False))
+            regenerated = bool(runtime_options.pop("player_regenerated", False))
+            if replacement or regenerated:
+                if self.playable_assets is None:
+                    raise RuntimeError('Player-sprite replacement is unavailable.')
+                overlay = self.playable_assets.pose_overlay(
+                    identity, source, self.workspace(identity),
+                    regenerated=regenerated)
+                runtime_options['pose_overlay'] = overlay
+            runtime_options['record_poses'] = recording
             runtime_options["controls"] = controls
             runtime_options["controls_fallback_reason"] = resolution.reason
             if comparison:
@@ -297,6 +313,70 @@ class NesLibrary:
                 )
             self._players[identity] = process
             return process, log
+
+    def import_playable_recording(self, identity, *, session_journal=None):
+        if self.playable_assets is None:
+            return 0
+        with self._lock:
+            self._require_idle(identity)
+            options = ({"session_journal": session_journal}
+                       if session_journal is not None else {})
+            if session_journal is None:
+                process = self._players.get(identity)
+                panes = getattr(process, 'players', None)
+                panes = panes if isinstance(panes, (tuple, list)) else (process,)
+                observed = []
+                for pane in panes:
+                    overlay = getattr(pane, '_pose_overlay', None)
+                    poses = getattr(overlay, 'learned_poses', ())
+                    if isinstance(poses, tuple):
+                        observed.extend(poses)
+                if observed:
+                    options['observed_poses'] = tuple(observed)
+            source, workspace = self._storage.source_path(identity), self.workspace(identity)
+            self._pose_imports.add(identity)
+        try:
+            return self.playable_assets.import_recording(
+                identity, source, workspace, **options)
+        finally:
+            with self._lock:
+                self._pose_imports.discard(identity)
+
+    def save_playable_image(self, identity, image, *, key=None):
+        if self.playable_assets is None:
+            raise RuntimeError('Player-sprite replacement is unavailable.')
+        with self._lock:
+            self._require_idle(identity)
+            self._read(identity)
+            self.playable_assets.save_image(
+                identity, self.workspace(identity), image, key=key)
+
+    def clear_playable_overrides(self, identity):
+        if self.playable_assets is None:
+            raise RuntimeError('Player-sprite replacement is unavailable.')
+        with self._lock:
+            self._require_idle(identity)
+            self._read(identity)
+            self.playable_assets.clear_overrides(identity, self.workspace(identity))
+
+    def enemy_candidates(self, identity):
+        if self.playable_assets is None:
+            return ()
+        with self._lock:
+            self._require_idle(identity)
+            return self.playable_assets.enemy_candidates(
+                identity, self._storage.source_path(identity),
+                self.workspace(identity))
+
+    def regenerate_playable_poses(self, identity):
+        if self.playable_assets is None:
+            raise RuntimeError('Player-sprite replacement is unavailable.')
+        with self._lock:
+            self._require_idle(identity)
+            self._read(identity)
+            return self.playable_assets.regenerate(
+                identity, self._storage.source_path(identity),
+                self.workspace(identity))
 
     def delete_game(self, identity, progress=_quiet, *, timeout=60.0):
         with self._lock:

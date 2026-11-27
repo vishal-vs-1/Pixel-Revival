@@ -74,6 +74,12 @@ impl Emulator {
         self.bus.ppu.framebuffer()
     }
 
+    /// VENDORED-DELTA (pose recording): observer snapshot for the Python
+    /// player-pose detector.
+    pub fn observation(&self) -> crate::ppu::PpuObservation {
+        self.bus.ppu.observation()
+    }
+
     pub fn rom_info(&self) -> &RomInfo {
         self.bus.cart.info()
     }
@@ -160,6 +166,14 @@ impl Emulator {
     pub fn ppu_read_debug(&mut self, addr: u16) -> u8 {
         self.bus.cart.ppu_read(addr).unwrap_or(0)
     }
+
+    pub fn pose_arm(&mut self, active: bool) { self.bus.ppu.pose_arm(active); }
+
+    pub fn pose_cells(&self) -> impl Iterator<Item = &crate::pose::PoseCell> {
+        self.bus.ppu.pose_cells()
+    }
+
+    pub fn pose_camera(&self) -> Option<(u16, u16)> { self.bus.ppu.pose_camera() }
 
     /// Low-level access for a debugger or trace tool. Normal frontends should
     /// not need these.

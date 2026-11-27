@@ -1,38 +1,32 @@
-# Performance notes
+# Performance
 
-Artwork preparation and game rendering are separate workloads. A faster batch conversion does not increase a game's simulation frame rate, and an upscaler is not run for every displayed frame.
+Artwork conversion and game rendering are separate workloads. Cached art is reused; AI does not run for each displayed frame. These notes describe boundaries, not latency or smoothness guarantees.
 
-## Local preparation measurements
+## Current behavior
 
-These are one-off measurements from the development machine, not cross-device guarantees. Neural runs used Real-ESRGAN x4 anime, Vulkan, tile size 128 and the same 512 source images. Actual time varies with drivers, thermal state and other GPU work.
+- Java ME can prepare known sources before play and admit bounded live work. Idle batches follow device memory and total source-pixel budgets; the former extra 32-image packed-catalog cap was removed.
+- Inference uses the selected device policy; unavailable drivers/devices can change selection. A requested device is not proof of the device used. Inspect the recorded native device/timing report.
+- NES defers idle artwork maintenance while playing. In-flight work may finish; capture and pose observation still cost time. There is no zero-overhead claim.
+- Normal event/DB processing replaces periodic full original-image catalog recovery. Manual Sync performs the selected-game scan while players are closed.
+- NES emulation/audio and display use separate workers with a two-frame display bound. Pose blending touches the replacement rectangle rather than converting the whole HD frame.
+- Java ME startup preload is bounded by time, image count and bytes; later assets use normal lookup.
 
-| Configuration | Images | Processing workers | Time |
-|---|---:|---:|---:|
-| RTX 2050, prior small batches | 256 | 1 | 26.338 s |
-| RTX 2050, shared model context | 256 | 1 | 7.639 s |
-| RTX 2050, shared model context | 256 | 2 | 5.894 s |
-| AMD integrated graphics | 256 | 1 | 17.471 s |
-| RTX 2050, shared model context | 512 | 2 | 7.777 s |
-| CPU Fast Pixel (Scale2x) | 256 | 1 | 2.351 s |
+## Read timings correctly
 
-The RTX 2050 two-worker run peaked at about 1.65 GiB dedicated GPU memory. Four and eight workers exceeded the project's 2 GiB profiling target and were stopped. Larger neural tiles also used substantially more memory. Current limits prioritize predictable memory use over maximizing worker count.
+| Measurement | What it includes |
+|---|---|
+| Native AI invocation | Process/device/model setup, temporary image I/O and inference |
+| Saved/published batch | Source/job work, conversion, output validation/writing and publication as defined by that harness |
+| Gameplay | Core, observation, replacement, presentation, scheduling and audio |
 
-The CPU row uses deterministic Scale2x, not neural inference; it produces a different visual result and is not directly comparable to Real-ESRGAN quality.
+Compare only runs with matching device, model, input sizes, worker/batch settings and timing boundaries. Source size has a large effect. Stage durations can overlap and must not be added blindly.
 
-## What is included in these timings
+Historical examples explain earlier apparent contradictions: a 256-image RTX 2050 run took 5.894 seconds with two processing workers; later AMD integrated-GPU stage runs took 27.719–35.803 seconds under different batching and cache conditions. A 37.491-second isolated total used another timing boundary. These are recorded observations, not current throughput targets. Full settings, size sweeps and failed trials remain in [EXPERIMENTS.md](EXPERIMENTS.md).
 
-The model throughput benchmark measures invocation and image processing. It does not include all archive inspection, persistent cache validation and publishing. A separate isolated service run processed 256 sources in 37.491 seconds end-to-end, including registration, validation, queue/storage work, image writing and ready-index publication.
+The newest fetched-sprite observer passed framebuffer-equivalence checks, which establish unchanged emulated output, not unchanged cost. Ordinary gameplay acceptance remains open in [Status](STATUS.md).
 
-The player can start before every artwork job finishes. Prepared artwork is reused, and missing replacements use the game's original artwork. During Java ME play, the artwork service admits small jobs only when frame and resource measurements allow it. NES Enhanced records tiles while playing and prepares replacements after the player closes.
+## Profiling tools
 
-## Reproduce
+Use `tools/profile_enhancement_devices.py` for isolated device/batch measurements and `tools/check_ai_batch.py` for its defined end-to-end batch check. Consult their arguments before running and keep outputs under `build/`. Player stage stats distinguish observation and overlay costs. Optional expiring AI tracing records device arguments, batch timing and bounded native output locally.
 
-Use a directory of source PNGs that you are permitted to use. Results are written under the ignored build folder; existing game caches are not overwritten.
-
-~~~powershell
-./.venv/Scripts/python.exe tools/profile_enhancement_devices.py <source-png-directory> --count 256 --configs 256:1:128,256:2:128
-./.venv/Scripts/python.exe tools/profile_enhancement_devices.py <source-png-directory> --count 512 --device-kinds dedicated --configs 64:1:128,256:1:128,512:1:128,512:2:128
-./.venv/Scripts/python.exe tools/check_ai_batch.py <source-png-directory> <profile-results.json>
-~~~
-
-The profiling tools use Windows performance counters and GPU-specific telemetry. Reports from one machine should not be treated as target guarantees for other hardware.
+Run profiling only when requested or authorized. No benchmark, recorder or game was run for this documentation cleanup.

@@ -195,7 +195,7 @@ def test_import_batch_is_atomic_and_preserves_ready_jobs(tmp_path):
     assert store.get_job(new_source.source_id, recipe.key).state == "QUEUED"
 
 
-def test_large_packed_catalogue_waits_for_capture_only_for_ai(tmp_path):
+def test_large_packed_catalogue_queues_ai_before_gameplay_capture(tmp_path):
     store = AssetStore(tmp_path)
     ai = ncnn_recipe('a' * 64)
     pixel = pixel_recipe()
@@ -209,26 +209,47 @@ def test_large_packed_catalogue_waits_for_capture_only_for_ai(tmp_path):
         rows.append({'image_id': key, 'decoder': PACKED_SPRITE_DECODER})
     rows.append(dict(rows[-1], decoder='standard-images-v1'))
     (tmp_path / 'catalogue.json').write_text(json.dumps(rows), encoding='utf-8')
-    game = {'id': tmp_path.name}
+    game = {'id': tmp_path.name,
+            'asset_decoding': {'outcomes': {PACKED_SPRITE_DECODER: LARGE_PACKED_CATALOGUE}}}
     importer = LegacyCacheImporter(tmp_path, store)
-    importer.import_workspace(game, ai)
-
-    # An older library can already have queued work for all three sources.
-    game['asset_decoding'] = {'outcomes': {PACKED_SPRITE_DECODER: LARGE_PACKED_CATALOGUE}}
-    importer.import_workspace(game, ai, queue_missing=False)
-    assert store.counts(ai.key, hold_packed=True)['on_demand'] == 2
-    first = store.claim_batch('worker', recipe_key=ai.key, hold_packed=True)
-    assert [job.source_id for job in first] == [rows[-1]['image_id']]
-    assert not store.has_waiting(ai.key, hold_packed=True)
+    report = importer.import_workspace(game, ai)
+    assert report.jobs_queued == 3
+    assert store.counts(ai.key)['QUEUED'] == 3
+    first = store.claim_batch('worker', recipe_key=ai.key)
+    assert {job.source_id for job in first} == {row['image_id'] for row in rows}
+    assert not store.has_waiting(ai.key)
 
     key = rows[0]['image_id']
     captured = SourceRecord(key, 2, 2, f'original-assets/{key}.png', 'RGB')
-    store.register_capture_event('seen-in-game', captured, ai)
+    assert not store.register_capture_event('seen-in-game', captured, ai)
     assert store.get_source(key).origin == 'RGB'
-    assert store.counts(ai.key, hold_packed=True)['on_demand'] == 1
-    assert store.claim_batch('worker', recipe_key=ai.key, hold_packed=True)[0].source_id == key
+    assert store.get_job(key, ai.key).state == 'RUNNING'
     importer.import_workspace(game, pixel)
     assert store.counts(pixel.key)['QUEUED'] == 3
+
+
+def test_enqueue_unqueued_sources_preserves_finished_and_active_jobs(tmp_path):
+    store = AssetStore(tmp_path)
+    recipe = pixel_recipe()
+    store.register_recipe(recipe)
+    sources = [_source(Image.new('RGBA', (2, 2), (value, 8, 9, 255))) for value in range(3)]
+    for source in sources:
+        store.register_source(source)
+    ready, running, missing = sources
+    store.enqueue(ready.source_id, recipe.key)
+    output = f'textures-cache/{recipe.key}/{ready.source_id}.png'
+    _image(tmp_path / output, (8, 8))
+    store.mark_imported_ready(ready.source_id, recipe.key, output)
+    store.enqueue(running.source_id, recipe.key)
+    lease = store.claim('worker', recipe_key=recipe.key)
+    assert lease.source_id == running.source_id
+
+    assert store.enqueue_unqueued_sources(recipe.key) == 1
+    assert store.enqueue_unqueued_sources(recipe.key) == 0
+    assert store.get_job(missing.source_id, recipe.key).state == 'QUEUED'
+    assert store.get_job(ready.source_id, recipe.key).relative_output == output
+    assert store.get_job(running.source_id, recipe.key).state == 'RUNNING'
+    assert store.claim_batch('other', recipe_key=recipe.key, max_count=1)[0].source_id == missing.source_id
 
 
 def test_legacy_import_reuses_cache_only_with_matching_known_recipe(tmp_path):

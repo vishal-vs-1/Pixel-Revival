@@ -25,6 +25,7 @@ import javax.microedition.lcdui.game.GameCanvas;
 public final class PlayerPoses {
     public static final boolean ENABLED = System.getProperty("jme.playerPoses") != null;
     static final boolean RECORD = Boolean.getBoolean("jme.recordPoses");
+    private static final boolean REPLACE = Boolean.parseBoolean(System.getProperty("jme.replacePoses", "true"));
     private static final int LIMIT = 192;
     private static final int DIRECTIONS = GameCanvas.LEFT_PRESSED | GameCanvas.RIGHT_PRESSED
             | GameCanvas.UP_PRESSED | GameCanvas.DOWN_PRESSED;
@@ -34,6 +35,8 @@ public final class PlayerPoses {
     private static boolean loaded;
     private static BufferedImage fallback;
     private static final Path ROOT = ENABLED ? Paths.get(System.getProperty("jme.playerPoses")) : null;
+    private static final Path CAPTURE_ROOT = ENABLED
+            ? Paths.get(System.getProperty("jme.poseCaptureRoot", ROOT.toString())) : null;
     private static final class Pose {
         String key;
         Image replacement;
@@ -79,7 +82,7 @@ public final class PlayerPoses {
 
     static synchronized Image resolve(String key, int w, int h, BufferedImage crop, boolean drawn) {
         try {
-            Path capture = ROOT.resolve("poses").resolve(key + ".png");
+            Path capture = CAPTURE_ROOT.resolve("poses").resolve(key + ".png");
             if (RECORD && crop != null && !CAPTURED.contains(key) && CAPTURED.size() < LIMIT) {
                 if (!loaded) {
                     try (java.util.stream.Stream<Path> paths = Files.list(capture.getParent())) {
@@ -94,12 +97,14 @@ public final class PlayerPoses {
                     try {
                         if (ImageIO.write(crop, "PNG", temp.toFile())) {
                             Files.move(temp, capture, StandardCopyOption.REPLACE_EXISTING);
-                            if (drawn) Files.write(ROOT.resolve("drawn").resolve(key), new byte[0]);
+                            if (drawn) Files.write(CAPTURE_ROOT.resolve("drawn").resolve(key), new byte[0]);
                             CAPTURED.add(key);
                         }
                     } finally { Files.deleteIfExists(temp); }
                 }
             }
+            // Original mode still records poses without applying saved artwork.
+            if (!REPLACE) return null;
             if (REPLACEMENTS.containsKey(key)) return REPLACEMENTS.get(key);
             if (REPLACEMENTS.size() < 512) {
                 Path override = ROOT.resolve("images").resolve(key + ".png");
@@ -147,7 +152,7 @@ public final class PlayerPoses {
                     || direction == GameCanvas.DOWN_PRESSED && dy > 0)
                 && ++pose.matches == 3) {
             try {
-                Path marker = Paths.get(System.getProperty("jme.playerPoses"), "suggested", pose.key);
+                Path marker = CAPTURE_ROOT.resolve("suggested").resolve(pose.key);
                 if (!Files.exists(marker)) Files.createFile(marker);
             } catch (java.io.IOException failure) {
                 System.err.println("Player pose suggestion: " + failure);

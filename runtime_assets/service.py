@@ -18,7 +18,6 @@ from runtime_assets.admission import can_admit_live
 from runtime_assets.discovery import ingest_events, read_source, reconcile_sources
 from runtime_assets.execution import execute, execute_batch
 from runtime_assets.publication import publish_compatibility, publish_ready, read_compatibility_state
-from runtime_assets.packed_sources import has_large_sprite_catalogue, on_demand_packed
 from runtime_assets.work_state import _Batch, _Game, _Outcome, _Work
 
 
@@ -32,7 +31,7 @@ class AssetService:
                  listener: Callable[[str, dict], None] | None = None,
                  poll_seconds: float = 0.1, lease_seconds: float = 90.0,
                  batch_size: int = 512, batch_pixels: int = 1_048_576,
-                 save_workers: int = 1):
+                 save_workers: int = 1, recover_previous_artwork: bool = False):
         self._backend_factory = backend_factory
         self._listener = listener
         self._poll_seconds = max(0.02, float(poll_seconds))
@@ -42,6 +41,8 @@ class AssetService:
         self._save_workers = max(1, min(16, int(save_workers)))
         self._batch_disabled: set[str] = set()
         self._owner = "asset-service-" + uuid.uuid4().hex
+        # Only the launcher holding its single-instance lock opts into takeover.
+        self._recover_previous_artwork = recover_previous_artwork
         self._games: dict[str, _Game] = {}
         self._paused_all = False
         self._lock = threading.RLock()
@@ -87,16 +88,18 @@ class AssetService:
                       ai_recipe: Recipe | None = None, queue_missing: bool = True,
                       paused: bool = False,
                       integration: WorkspaceIntegration | None = None,
+                      defer_maintenance_during_play: bool = False,
                       progress=None, fresh_sources=None, recover: bool = False) -> MigrationReport:
         """Register a game and its static sources without waiting for enhancement."""
         with self._coordinator_gate:
             return self._register_game(workspace,recipe,game=game,ai_recipe=ai_recipe,
                                        queue_missing=queue_missing,paused=paused,integration=integration,
+                                       defer_maintenance_during_play=defer_maintenance_during_play,
                                        progress=progress, fresh_sources=fresh_sources,
                                        recover=recover)
 
     def _register_game(self,workspace,recipe,*,game,ai_recipe,queue_missing,paused,integration,
-                       progress,fresh_sources,recover=False):
+                       defer_maintenance_during_play,progress,fresh_sources,recover=False):
         root = Path(workspace).resolve()
         if game.get("id") != root.name:
             raise ValueError("Game metadata ID does not match its workspace")
@@ -124,15 +127,17 @@ class AssetService:
                 self._games[root.name] = provisional
             self._notify(root.name)
         try:
+            if self._recover_previous_artwork and current is None:
+                store.recover_previous_service_jobs(self._owner)
             counts = store.counts(recipe.key) if recover and integration is None else None
-            indexed = counts and counts["sources"] > 0 and any(
-                counts[state] for state in ("QUEUED", "RUNNING", "DEFERRED", "READY", "FAILED"))
+            indexed = counts and counts["sources"] > 0
             reuse = bool(indexed)
             if reuse:
                 # Recovery only reattaches an established workspace. Re-reading
                 # every source took minutes and delayed the first enhancement.
                 store.register_recipe(recipe)
-                report = MigrationReport(0, 0, 0, 0, 0, 0)
+                queued = store.enqueue_unqueued_sources(recipe.key)
+                report = MigrationReport(0, 0, 0, queued, 0, 0)
             elif integration is None:
                 report = LegacyCacheImporter(root, store).import_workspace(
                     game, recipe, ai_recipe=ai_recipe, queue_missing=queue_missing,
@@ -165,7 +170,7 @@ class AssetService:
                 current.integration = integration
                 current.paused = (paused or self._paused_all or
                                   (current.player_active and not current.live_enabled))
-            current.large_sprite_catalogue = integration is None and has_large_sprite_catalogue(game)
+            current.defer_maintenance_during_play = defer_maintenance_during_play
             current.dirty_at = time.monotonic() + 0.5
             current.next_scan = time.monotonic() + 5.0
             current.compat_pending = True
@@ -290,9 +295,9 @@ class AssetService:
 
     def stats(self, game_id: str) -> dict:
         game = self._game(game_id)
-        hold_packed = game.large_sprite_catalogue and on_demand_packed(game.recipe)
-        counts = game.store.counts(game.recipe.key, hold_packed=hold_packed)
+        counts = game.store.counts(game.recipe.key)
         active = self._active
+        active_images = sum(work.game is game for work in active.items) if active else 0
         counts.update(game_id=game_id, recipe_key=game.recipe.key,
                       paused=game.paused, total=sum(counts[state] for state in
                       ("QUEUED", "RUNNING", "DEFERRED", "READY", "FAILED")),
@@ -301,7 +306,8 @@ class AssetService:
                       live_reason=game.live_reason,
                       live_jobs_started=game.live_jobs_started,
                       last_live_job_seconds=game.last_live_job_seconds,
-                      active_batch_images=sum(work.game is game for work in active.items) if active else 0,
+                      active_batch_images=active_images,
+                      reserved_images=max(0, counts['RUNNING'] - active_images),
                       background_batch_limit=game.batch_limit,
                       batch_fallbacks=game.batch_fallbacks,
                       resource_reason=game.resource_reason,
@@ -315,9 +321,15 @@ class AssetService:
             game = self._game(game_id)
             if game.removing:
                 return 0
-            if game.integration is not None:
-                return self._discover_integrated(game)
-            return self._reconcile_sources(game) + self._ingest_events(game, 32)
+            # Manual sync replays format-owned captures first, then recovers
+            # saved originals that have no corresponding database entry.
+            accepted = (self._discover_integrated(game) if game.integration is not None
+                        else self._ingest_events(game, 32))
+            added = self._reconcile_sources(game)
+            queued = game.store.enqueue_unqueued_sources(game.recipe.key)
+            if queued:
+                self._notify(game_id)
+            return accepted + added + queued
 
     def _discover_integrated(self, game: _Game) -> int:
         accepted = game.integration.discover(game.workspace, game.store, game.recipe)
@@ -395,6 +407,11 @@ class AssetService:
         now = time.monotonic()
         with self._lock:
             games = list(self._games.values())
+            # Foreground opt-in defers idle scans and publication. Keep due
+            # work pending and let any other active player keep its live path.
+            if any(game.player_active and game.defer_maintenance_during_play for game in games):
+                games = [game for game in games
+                         if game.player_active and not game.defer_maintenance_during_play]
         for game in games:
             if game.removing:continue
             try:
@@ -406,9 +423,8 @@ class AssetService:
                         game.next_scan = now + 0.5
                         self._discover_integrated(game)
                 else:
-                    if now >= game.next_scan:
-                        self._reconcile_sources(game)
-                        game.next_scan = now + 5.0
+                    # Runtime captures carry durable events; catalog recovery
+                    # belongs to import and explicit reconciliation.
                     if self._ingest_events(game, 32):
                         game.dirty_at = now + 0.5
             except Exception:
@@ -463,8 +479,7 @@ class AssetService:
         for game in ordered:
             if game.paused or game.removing:
                 continue
-            hold_packed = game.large_sprite_catalogue and on_demand_packed(game.recipe)
-            if not game.store.has_waiting(game.recipe.key, hold_packed=hold_packed):
+            if not game.store.has_waiting(game.recipe.key):
                 if game.resource_reason:
                     game.resource_reason='';self._notify(game.workspace.name)
                 continue
@@ -482,9 +497,6 @@ class AssetService:
                         continue
                     if not game.player_active and game.recipe.key not in self._batch_disabled:
                         limit = self._batch_size
-                        if hold_packed:
-                            # Recheck pause and foreground play between shorter AI batches.
-                            limit = min(limit, 32)
                         if budget is not None:
                             limit=min(limit,budget.max_images)
                             pixel_budget=min(pixel_budget,budget.max_pixels)
@@ -494,8 +506,7 @@ class AssetService:
             if not game.player_active:game.batch_limit=limit
             try:
                 leases = game.store.claim_batch(self._owner, lease_seconds=self._lease_seconds,
-                    recipe_key=game.recipe.key, max_count=limit, max_pixels=pixel_budget,
-                    hold_packed=hold_packed)
+                    recipe_key=game.recipe.key, max_count=limit, max_pixels=pixel_budget)
             except Exception:
                 continue
             items = []

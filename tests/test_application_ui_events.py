@@ -4,12 +4,105 @@ from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
+from queue import Queue
+import threading
 
 import pytest
 
 from app import App
 from systems.contracts import GameRef, JAVA_ME, NES
 from systems.ui_events import ApplicationEvent
+
+
+@pytest.mark.parametrize('failure', [None, RuntimeError('sync could not read artwork')])
+def test_artwork_sync_keeps_the_selected_game_identity_and_finishes_busy_state(monkeypatch, failure):
+    game = {'id': 'a' * 64, 'system': JAVA_ME, 'name': 'Selected game'}
+    app = App.__new__(App)
+    app.game = Mock(return_value=game)
+    app.busy = False
+    app.pending_imports = []
+    app.players = {}
+    app.deleting_games = {}
+    app.status = Mock()
+    app.progress = Mock()
+    app.messages = Queue()
+    app.library = SimpleNamespace(sync_artwork=Mock(return_value=3, side_effect=failure))
+    work = []
+
+    class Deferred:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            work.append(self.target)
+
+    monkeypatch.setattr('launcher.operations.threading', SimpleNamespace(Thread=Deferred))
+    app.sync_artwork()
+    assert app.busy
+    app.library.sync_artwork.assert_not_called()
+    app.game.return_value = {'id': 'b' * 64, 'system': NES, 'name': 'Other game'}
+    work.pop()()
+    app.library.sync_artwork.assert_called_once_with(game)
+    kind, event = app.messages.get_nowait()
+    assert kind == ('scoped_error' if failure else 'scoped_status')
+    assert event.ref == GameRef(JAVA_ME, game['id'])
+    if failure is None:
+        assert '3 new artwork items queued' in event.detail
+    assert app.messages.get_nowait() == ('idle', ApplicationEvent('idle', JAVA_ME, game['id']))
+
+
+def test_artwork_sync_waits_until_every_player_is_closed():
+    app = App.__new__(App)
+    app.busy = False
+    app.pending_imports = []
+    app.game = Mock(return_value={'id': 'a' * 64, 'system': JAVA_ME, 'name': 'Selected game'})
+    active = Mock()
+    active.poll.return_value = None
+    app.players = {'b' * 64: (active, Path('other-game.log'))}
+    app.status = Mock()
+    app.library = Mock()
+    app.sync_artwork()
+    app.library.sync_artwork.assert_not_called()
+    assert not app.busy
+    assert 'Close the game players' in app.status.set.call_args.args[0]
+
+
+def test_artwork_status_distinguishes_current_batch_from_other_reserved_jobs():
+    app = App.__new__(App)
+    app.cache_info = Mock()
+    app.preparation_info = Mock()
+    app.cover_status = Mock()
+    app._show_java_artwork({'asset_work': {
+        'READY': 996, 'QUEUED': 1000, 'RUNNING': 1536,
+        'active_batch_images': 512, 'reserved_images': 1024,
+    }})
+    text = app.cache_info.set.call_args.args[0]
+    assert '512 active' in text
+    assert '1024 reserved' in text
+    assert '1536 active' not in text
+
+
+def test_pose_import_runs_off_ui_thread_and_posts_a_scoped_completion():
+    app = App.__new__(App)
+    app.messages = Queue()
+    app.status = Mock()
+    entered, finish = threading.Event(), threading.Event()
+
+    def import_poses(key):
+        assert key == 'a' * 64
+        entered.set()
+        assert finish.wait(2)
+        return 6
+
+    app.nes_library = SimpleNamespace(import_playable_recording=import_poses)
+    App._start_pose_import(app, 'a' * 64)
+    try:
+        assert entered.wait(1)
+        assert 'a' * 64 in app._pose_importing
+        assert app.messages.empty()
+    finally:
+        finish.set()
+    assert app.messages.get(timeout=2) == ('poses_imported', ('a' * 64, 6, None))
 
 
 def test_events_are_frozen_and_validate_scoped_game_identity():

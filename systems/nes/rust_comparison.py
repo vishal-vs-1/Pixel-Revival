@@ -21,6 +21,7 @@ from .metadata import DEFAULT_RENDER_SCALE
 from .pack import PRIORITY_SAFE_PACK
 from .rust_hd import owned_path, read_pack_snapshot
 from .rust_player import _TK_TO_ACTION, _tk_keysym, RustNesPlayer
+from .comparison_clock import ComparisonClock
 
 
 def _run_on_tk(root, callback, timeout=30.0):
@@ -47,6 +48,7 @@ def _run_on_tk(root, callback, timeout=30.0):
 
 
 def _copy_pack(workspace: Path, target: Path):
+    workspace = Path(workspace).resolve()
     pack, scale = read_pack_snapshot(workspace)
     relative = pack.relative_to(workspace)
     copy_playback_files(pack.parent, target / relative.parent)
@@ -69,7 +71,9 @@ class RustComparisonPlayers:
         self.ready_paths = ()
         self.expected_exit = False
         self.startup_error = None
+        self._failed_code = None
         self.held = set()
+        self.clock = ComparisonClock()
         self.window = tk.Toplevel(root)
         self.window.title(f"{title} · Original / Enhanced")
         self.window.geometry("1280x760")
@@ -109,7 +113,9 @@ class RustComparisonPlayers:
         self._watch_job = None
         if self.expected_exit:
             return
-        if self.players and all(player.poll() is not None for player in self.players):
+        if self.players and any(player.poll() is not None for player in self.players):
+            self._failed_code = next((player.poll() for player in self.players
+                                      if player.poll() not in (None, 0)), None)
             self.close()
             return
         try:
@@ -118,6 +124,7 @@ class RustComparisonPlayers:
             self._watch_job = None
 
     def add(self, index, player, log):
+        player._comparison_clock = self.clock
         self.players.append(player)
         self.logs.append(log)
 
@@ -130,6 +137,8 @@ class RustComparisonPlayers:
         codes = [player.poll() for player in self.players]
         if any(code is None for code in codes):
             return None
+        if self._failed_code is not None:
+            return self._failed_code
         if self.expected_exit:
             return 0
         return next((code for code in codes if code != 0), 0)
@@ -150,11 +159,17 @@ class RustComparisonPlayers:
                 player.press(action)
             else:
                 player.release(action)
+        self._sample_controls()
+
+    def _sample_controls(self):
+        if self.players:
+            self.clock.mask = self.players[0]._mask
 
     def release_all(self):
         for player in self.players:
             player.release_all()
         self.held.clear()
+        self._sample_controls()
 
     def _press(self, event):
         if event.keysym == "Escape":
@@ -166,6 +181,7 @@ class RustComparisonPlayers:
         self.held.add(action)
         for player in self.players:
             player.press(action)
+        self._sample_controls()
         return "break"
 
     def toggle_fullscreen(self):
@@ -181,12 +197,14 @@ class RustComparisonPlayers:
             self.held.discard(action)
             for player in self.players:
                 player.release(action)
+            self._sample_controls()
         return "break"
 
     def close(self):
         if self.expected_exit:
             return
         self.expected_exit = True
+        self.clock.close()
         if self._watch_job is not None:
             try:
                 self.window.after_cancel(self._watch_job)
@@ -199,8 +217,22 @@ class RustComparisonPlayers:
                 player.close()
             except (OSError, RuntimeError):
                 pass
+        self._finish_close()
+
+    def _finish_close(self):
+        if getattr(self, '_closed', False):
+            return
+        # A pane can defer closing while native work still owns its window.
+        # Keep the parent alive until both panes finish releasing resources.
+        if any(player._handle is not None for player in self.players):
+            try:
+                self.window.after(20, self._finish_close)
+            except tk.TclError:
+                pass
+            return
         try:
             self.window.destroy()
+            self._closed = True
         except tk.TclError:
             pass
 
@@ -228,7 +260,7 @@ def launch_comparison(runtime, game, source, workspace, *, host_parent=None,
     """Prepare isolated runs and open both in-tool players side by side."""
     if host_parent is None:
         raise RuntimeError("In-tool comparison needs the application window")
-    workspace = Path(workspace)
+    workspace = Path(workspace).resolve()
     identity = game["id"]
     pack, scale = read_pack_snapshot(workspace)
     requested = int(game.get("render_scale", DEFAULT_RENDER_SCALE))
@@ -258,7 +290,11 @@ def launch_comparison(runtime, game, source, workspace, *, host_parent=None,
                 rom, target = launches[original]
                 player = RustNesPlayer(
                     runtime._core, game, rom, target, original=original,
-                    controls=controls, embedded_parent=pair.panes[index])
+                    controls=controls, embedded_parent=pair.panes[index],
+                    audio_enabled=not original, capture=not original,
+                    capture_workspace=workspace, record_poses=not original,
+                    pose_workspace=workspace,
+                    pose_overlay=None if original else options.get('pose_overlay'))
                 # Both panes must render at the same physical size so tiles and
                 # HUD line up; exact fit overrides integer scaling.
                 player._fit_exact = True

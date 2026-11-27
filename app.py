@@ -17,6 +17,7 @@ from systems.comparison import ComparisonPlayers
 from systems.jme.system import JavaMeSystem
 from systems.nes.library import NesLibrary
 from systems.nes.integration import NesCaptureIntegration
+from systems.nes.playable_assets import PlayableAssets
 from systems.nes.metadata import DEFAULT_RENDER_SCALE
 from systems.app_settings import ApplicationSettingsStore
 from runtime_assets.recipes import ArtworkRecipes
@@ -30,7 +31,7 @@ from launcher.layout import build_window
 
 
 class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations, LauncherPlayback, LauncherEvents):
-    def __init__(self, root):
+    def __init__(self, root, *, recover_previous_artwork=False):
         self.root = root
         self.nes_control_profiles = NesControlProfileStore(
             DATA_ROOT / 'config' / 'nes-control-profiles.json', atomic_json)
@@ -43,7 +44,8 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
             rust_runtime = None
         self.nes_runtime = rust_runtime
         artwork_recipes = ArtworkRecipes()
-        java_library = Library(artwork_recipes=artwork_recipes)
+        java_library = Library(artwork_recipes=artwork_recipes,
+                               recover_previous_artwork=recover_previous_artwork)
         java = JavaMeSystem(java_library, demo=ROOT / 'fixtures' / 'RevivalDemo.jar')
 
         def register_nes_artwork(folder, game, recovering=False):
@@ -55,13 +57,14 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
             )
             return java_library.asset_service.register_game(
                 folder, recipe, game=game, ai_recipe=ai_recipe,
-                integration=integration,
+                integration=integration, defer_maintenance_during_play=True,
             )
 
         # Keep the JME paths intact and give NES its independently owned storage tree.
         nes = NesLibrary(DATA_ROOT / 'nes', asset_service=java_library.asset_service,
                          control_profiles=self.nes_control_profiles, runtime=rust_runtime,
-                         register_artwork=register_nes_artwork)
+                         register_artwork=register_nes_artwork,
+                         playable_assets=PlayableAssets(APP_ROOT))
         self.nes_library = nes
         self.library = ApplicationLibrary((java, nes), java_library.asset_service)
         self.app_settings = ApplicationSettingsStore(
@@ -80,6 +83,7 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
         self.busy_reason = ''
         self.deleting_games = {}
         self.player_refs = {}
+        self._recording_players = {}
         self._pending_player_states = set()
         self._delete_workers = ThreadPoolExecutor(max_workers=2,thread_name_prefix='delete-game')
         self.pending_imports = deque()
@@ -155,7 +159,8 @@ def main():
             messagebox.showinfo('JAR Revival is already open','Use the existing JAR Revival window. Only one library runs at a time to avoid competing conversion jobs.')
             notice.destroy();return
         root=tk.Tk()
-        App(root)
+        # The launcher lock remains held throughout recovery and the UI lifetime.
+        App(root, recover_previous_artwork=True)
         root.mainloop()
 
 

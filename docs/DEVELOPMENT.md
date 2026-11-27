@@ -1,73 +1,61 @@
 # Development
 
+The active architecture is [Project flow](PROJECT_FLOW.md); unresolved behavior is tracked in [Status](STATUS.md). Read repository `AGENTS.md` before modifying code.
+
 ## Java ME setup
 
-Use the source setup in the [README](../README.md#run-from-source). `tools/build.py` fetches the pinned FreeJ2ME-Plus revision, applies the Java integration, builds the synthetic demo, and prepares the LWJGL and Java runtimes. Install `requirements-dev.txt` to run the Python checks.
-
-## Shared graphics runtime
-
-Install CMake 3.27+, Visual Studio 2022 C++ x64 build tools with the v143 toolset and Windows SDK, and a JDK with JNI headers. Set `JAVA_HOME` to that JDK. From the repository root run:
-
-~~~powershell
-python tools/build_graphics.py --generator 'Visual Studio 17 2022'
-~~~
-
-This builds the Windows x64 renderer DLL and Java JNI shim, runs the native contracts, and stages the runtime under `build/common-runtime-u22/`. Java ME uses its compatibility GPU presenter.
+Follow [source setup](../README.md#run-from-source). `tools/build.py` fetches the pinned FreeJ2ME-Plus source, applies integration patches and prepares the Java player/demo/runtime. Java ME uses the compatibility GPU presenter or per-game CPU mode.
 
 ## NES setup
 
-The NES player is our own Rust library in `rust-nes/`. The Python app loads `mesen_player.dll` through `systems/nes/rust_core.py`; no external emulator process or MesenCE checkout is used.
+Build the vendored C ABI library from the project root:
 
-Install the stable Rust toolchain, then build the library from the repository root:
+```powershell
+cargo build --release --manifest-path rust-nes/Cargo.toml -p mesen-player --target-dir build/rust-nes-target
+python app.py
+```
 
-~~~powershell
-$env:CARGO_TARGET_DIR = "build/rust-nes-target"
-cargo build --release --manifest-path rust-nes/Cargo.toml -p mesen-player
-~~~
+`systems/nes/rust_core.py` loads the newest existing `mesen_player.dll` or `mesen_player_next.dll` under `build/rust-nes-target/release/`. `RUST_NES_DLL` overrides discovery for an explicit build. A running process keeps its loaded DLL; restart to pick up changes. Do not build or edit the external upstream checkout. New vendored-core changes require the approval specified in `AGENTS.md`.
 
-Run `python app.py` and select **NES**. The library is discovered under `build/rust-nes-target/release/mesen_player.dll`; set `RUST_NES_DLL` to an absolute DLL path only when testing another build. A fresh build can be placed beside a locked DLL as `mesen_player_next.dll`, which the app prefers until the running app stops.
-
-## Portable Windows ZIP
-
-Build the Java ME player and shared graphics runtime first. Install PyInstaller and build the ZIP from the repository root:
-
-~~~powershell
-python -m pip install pyinstaller==6.22.3
-python tools/package_windows.py
-~~~
-
-The ZIP and SHA-256 checksum are written to `build/windows-release/`. The archive includes the Java ME runtime, shared graphics runtime, the Rust NES library, the synthetic demo, and the Windows guide. Real-ESRGAN is a separate setup step.
+Base ABI is 1. Optional pose protocol 2 reports actual fetched sprites; old libraries retain the debug-read fallback. Journals write version 2 and read versions 1/2. Pose observation does not change save-state serialization. See [Rust build notes](../rust-nes/README.md).
 
 ## Source layout
 
-- `app.py` is the desktop entry point. `launcher/` owns Tk layout, catalog and settings views, background operation controls, and playback UI.
-- `systems/jme/` owns the Java ME library, artwork preparation, and JVM launch. `systems/nes/` owns the NES library, HD packs, and the Rust player window. `rust-nes/` contains the vendored core and its C ABI crate.
-- `runtime_assets/` separates scheduling, live admission, conversion execution, and result publication. The deterministic sprite painter is also available through `python -m runtime_assets.sprite_paint input.png output.png`.
-- `tools/patches/` separates build-time patches by emulator and subsystem. `emulator-src/` groups Java integration sources by responsibility. The patcher installs them into the Java package expected by the pinned upstream player.
+| Path | Ownership |
+|---|---|
+| `launcher/` | Tk views, operations, playback choices and UI events |
+| `systems/application.py` | System routing boundary |
+| `systems/jme/` | JAR import, preparation, pose data and JVM launch |
+| `emulator-src/`, `tools/patches/` | Java integration and pinned-source patches |
+| `systems/nes/` | Cartridge library, captures, HD packs, pose pipeline, input/audio/display |
+| `rust-nes/mesen-core/`, `rust-nes/mesen-player/` | Vendored NES core and Python-facing C ABI |
+| `runtime_assets/` | Queue/storage, scheduling, converters and publication |
+| `systems/generated_poses.py` | Generated pose-set storage and catalog validation |
+| `storage/`, `controls/`, `graphics/` | Paths, profiles and device/runtime policy |
 
-Follow [project flow](PROJECT_FLOW.md) for the active runtime architecture. The ignored `local-work/` tree preserves the detailed designs, retired experiments, and validation history.
+The NES emulator worker owns native calls; the display worker consumes bounded immutable frames. Backend calls must not execute under the application routing lock. Tk widget ownership stays on the UI thread.
 
 ## Checks
 
-| Location | What runs there |
-| --- | --- |
-| `tests/test_*.py` | Python contracts, storage, and launcher behavior. `test_ui.py` creates a Tk test window. |
-| `tests/fixtures/` | Synthetic data and pinned text fixtures. |
-| `tests/java/` | Reusable Java player checks, compiled by the corresponding scripts in `tools/`. |
-| `native-graphics/tests/` | Native graphics contracts and optional OpenGL checks. |
-| `rust-nes/` | Rust NES core and `mesen-player` C ABI tests (`cargo test`). |
+Use focused checks appropriate to a code change. Documentation cleanup needs link/reference review, not gameplay or benchmarks.
 
-For headless Python checks run:
-
-~~~powershell
+```powershell
 python -m pip install -r requirements-dev.txt
-python -m pytest tests -q --ignore=tests/test_ui.py
-~~~
+python -m pytest -q tests/test_nes_pose.py tests/test_nes_pose_tracking.py tests/test_nes_player_safety.py
+```
 
-Use `python -m pytest tests/test_ui.py -q` for Tk layout and interaction on a machine where opening test windows is acceptable. The [CI workflow](../.github/workflows/ci.yml) runs the Python suite and builds the Windows native components in separate jobs.
+Rust checks use `cargo test --manifest-path rust-nes/Cargo.toml --target-dir build/rust-nes-target`. Native Python integration needs a built DLL; Java checks need a JDK. Inspect selected test fixtures/markers before running: some checks open Tk or player windows. Default discovery is restricted to `tests/`; `local-work/` experiments are not part of the suite. Respect the user's current authorization for runtime tests and desktop interaction.
 
-With a built Java ME player, use `tools/check_control_profiles.py`, `tools/check_controls.py`, `tools/check_renderer.py`, `tools/check_lifecycle.py`, or `tools/check_runtime_assets.py` for focused checks. `tools/check_gpu.py` and `tools/check_input.py` need working graphics. For NES, run `python -m pytest -q tests/test_nes_rust.py` after building the Rust DLL. See the [performance guide](PERFORMANCE.md) for the supported profiling tools.
+## Portable Windows ZIP
 
-## Working tree
+The existing packaging script still stages the shared native graphics runtime. Its presence in a ZIP is not evidence that active players use it. Until dependencies are audited, build that staging dependency as required by the script:
 
-Keep generated outputs under `build/`, pinned source checkouts under `vendor/`, and downloaded runtimes in their designated tool directories. Keep imported games, saves, captures, caches, and local design and experiment history out of commits. The Java integration sources use the package paths expected by the FreeJ2ME-Plus patcher.
+```powershell
+python tools/build_graphics.py --generator 'Visual Studio 17 2022'
+python -m pip install pyinstaller==6.22.3
+python tools/package_windows.py
+```
+
+The native build requires CMake, Visual Studio 2022 x64 C++ tools/Windows SDK and a JDK with JNI headers (`JAVA_HOME`). Build the Java player and Rust library first. The packager copies the standard `mesen_player.dll`, so ensure it is the intended build rather than relying on a newer `_next.dll`. Output goes to `build/windows-release/`; optional AI setup remains separate.
+
+Keep generated binaries under `build/` and upstream checkouts under `vendor/`. Preserve games, saves, captures, caches and permanent `local-work/` history. Do not stage or publish without explicit instruction.

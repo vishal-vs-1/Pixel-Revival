@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import threading
 import time
+from unittest.mock import Mock
 
 import pytest
 from PIL import Image
@@ -68,6 +69,31 @@ class BatchBackend(FakeBackend):
         if self.fail:raise RuntimeError('simulated batch failure')
         return [source.resize((source.width*recipe.scale,source.height*recipe.scale),
                               Image.Resampling.NEAREST) for source in sources]
+
+
+def test_large_ai_catalogue_uses_memory_budget_instead_of_a_32_image_cap(tmp_path, monkeypatch):
+    from runtime_assets.contracts import ncnn_recipe
+    from runtime_assets.resources import PreparationBudget
+    from runtime_assets.packed_sources import PACKED_SPRITE_DECODER, LARGE_PACKED_CATALOGUE
+
+    workspace = tmp_path / 'large-ai-catalogue'
+    for index in range(40):
+        _source(workspace, color=(index, 90, 150, 255))
+    backend = BatchBackend([])
+    backend.batch_limits = lambda: PreparationBudget(64, 1_048_576)
+    service = AssetService(lambda _: backend)
+    monkeypatch.setattr(service, '_start', lambda: None)
+    recipe = ncnn_recipe('a' * 64)
+    try:
+        service.register_game(workspace, recipe, game={
+            'id': workspace.name,
+            'asset_decoding': {'outcomes': {PACKED_SPRITE_DECODER: LARGE_PACKED_CATALOGUE}},
+        })
+        service._schedule_one()
+        assert service.stats(workspace.name)['background_batch_limit'] == 64
+        assert len(service._active.items) == 40
+    finally:
+        service.close()
 
 
 def _several_sources(workspace,count=5):
@@ -173,7 +199,34 @@ def test_registration_reports_saved_counts_before_a_slow_scan(tmp_path, monkeypa
     assert not errors
 
 
-def test_recovery_reattaches_an_indexed_catalogue_without_rescanning(tmp_path, monkeypatch):
+@pytest.mark.parametrize('exclusive_startup', [False, True])
+def test_exclusive_startup_recovers_previous_service_jobs_only(tmp_path, monkeypatch, exclusive_startup):
+    workspace = tmp_path / 'interrupted-launcher'
+    sources = _several_sources(workspace, count=2)
+    recipe = _recipe()
+    store = AssetStore(workspace)
+    store.register_recipe(recipe)
+    for source in sources:
+        store.register_source(source)
+        store.enqueue(source.source_id, recipe.key)
+    service = AssetService(lambda _: FakeBackend([]),
+                           recover_previous_artwork=exclusive_startup)
+    monkeypatch.setattr(service, '_start', lambda: None)
+    previous = store.claim_batch('asset-service-previous', recipe_key=recipe.key, max_count=1)[0]
+    own = store.claim_batch(service._owner, recipe_key=recipe.key, max_count=1)[0]
+    try:
+        service.register_game(workspace, recipe, game={'id': workspace.name}, recover=True)
+        expected = 'QUEUED' if exclusive_startup else 'RUNNING'
+        assert store.get_job(previous.source_id, recipe.key).state == expected
+        assert store.get_job(own.source_id, recipe.key).state == 'RUNNING'
+        assert store.renew(own, lease_seconds=90) is not None
+        if exclusive_startup:
+            assert not store.mark_failed(previous, 'stale worker result', retry_at=None)
+    finally:
+        service.close()
+
+
+def test_recovery_queues_unqueued_indexed_sources_without_rescanning(tmp_path, monkeypatch):
     import runtime_assets.service as service_module
 
     _image, source = _source(tmp_path)
@@ -181,18 +234,19 @@ def test_recovery_reattaches_an_indexed_catalogue_without_rescanning(tmp_path, m
     store = AssetStore(tmp_path)
     store.register_recipe(recipe)
     store.register_source(source)
-    store.enqueue(source.source_id, recipe.key)
     scans = []
     monkeypatch.setattr(service_module.LegacyCacheImporter, "import_workspace",
                         lambda *args, **kwargs: scans.append(1))
     seen = []
     service = AssetService(lambda selected: FakeBackend([]),
                            listener=lambda game_id, stats: seen.append(dict(stats)))
+    monkeypatch.setattr(service, '_start', lambda: None)
     try:
-        service.register_game(tmp_path, recipe, game={"id": tmp_path.name},
-                              queue_missing=False, recover=True)
+        report = service.register_game(tmp_path, recipe, game={"id": tmp_path.name},
+                                       queue_missing=False, recover=True)
         assert scans == []
-        assert seen and seen[0]["QUEUED"] == 1
+        assert report.jobs_queued == 1
+        assert any(stats['QUEUED'] == 1 for stats in seen)
     finally:
         service.close(timeout=5)
 
@@ -506,6 +560,38 @@ def test_event_ingest_validates_hash_deduplicates_and_acknowledges(tmp_path):
         assert service.stats(workspace.name)["QUEUED"] == 1
         assert service.reconcile(workspace.name) == 0
         assert service.stats(workspace.name)["QUEUED"] == 1
+    finally:
+        service.close()
+
+
+def test_legacy_catalog_is_only_scanned_by_explicit_reconcile(tmp_path, monkeypatch):
+    workspace = tmp_path / "legacy-game"
+    directory = workspace / "original-assets"
+    directory.mkdir(parents=True)
+    service = AssetService(lambda selected: FakeBackend([]))
+    monkeypatch.setattr(service, "_start", lambda: None)
+    recipe = _recipe()
+    try:
+        service.register_game(workspace, recipe, game={"id": workspace.name}, paused=True)
+        game = service._game(workspace.name)
+        reconcile = Mock(wraps=service._reconcile_sources)
+        monkeypatch.setattr(service, "_reconcile_sources", reconcile)
+        image = Image.new("RGBA", (3, 2), (40, 90, 150, 255))
+        source_id = image_source_id(image)
+        path = directory / (source_id + ".png")
+        image.save(path)
+        game.dirty_at = None
+        game.next_scan = 0
+        service._coordinate_once()
+        service._coordinate_once()
+        reconcile.assert_not_called()
+        assert game.store.get_source(source_id) is None
+
+        assert service.reconcile(workspace.name) == 1
+        reconcile.assert_called_once_with(game)
+        assert game.store.get_source(source_id) is not None
+        assert service.stats(workspace.name)["QUEUED"] == 1
+        assert service.reconcile(workspace.name) == 0
     finally:
         service.close()
 

@@ -61,3 +61,13 @@ class ComparisonPlayers:
                 raise BrokenPipeError("Comparison player input is unavailable")
             stream.write(message)
             stream.flush()
+
+    def request_close(self):
+        """Let each JVM close its own renderer on its owning thread."""
+        for player in self.players:
+            if player.poll() is None and player.stdin is not None:
+                try:
+                    player.stdin.write(b"!CLOSE\n")
+                    player.stdin.flush()
+                except (OSError, ValueError):
+                    pass

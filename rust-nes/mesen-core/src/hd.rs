@@ -15,7 +15,7 @@
 //!   `PaletteColors`. Our import pipeline stores the same value as the
 //!   `Tile.palette` int, so keys compare equal.
 //! * `col`/`row` are the flip-resolved pixel coordinates inside the 8x8 tile,
-//!   so the compositor never needs mirror flags.
+//!   while mirror flags orient the subpixels within each enlarged pixel.
 
 /// One winning pixel's tile. Records are pushed in scanline order, but each
 /// also carries its own coordinates so compositing never depends on counts
@@ -85,9 +85,9 @@ pub fn bg_span< T: Copy>(previous: T, current: T, x: u32, fine_x: u32) -> (T, u3
 #[inline]
 pub fn sprite_column(shift: u32, horizontal_mirror: bool) -> u32 {
     if horizontal_mirror {
-        shift
-    } else {
         7 - shift
+    } else {
+        shift
     }
 }
 
@@ -137,11 +137,21 @@ mod tests {
 
     #[test]
     fn sprite_column_mirrors_like_get_pixel_color() {
-        assert_eq!(sprite_column(0, false), 7);
-        assert_eq!(sprite_column(7, false), 0);
-        assert_eq!(sprite_column(0, true), 0);
-        assert_eq!(sprite_column(7, true), 7);
-        assert_eq!(sprite_column(3, false), 4);
-        assert_eq!(sprite_column(3, true), 3);
+        // Compare texture coordinates with the actual PPU bit extraction;
+        // column zero in a decoded tile is bit seven, not bit zero.
+        for pattern in [0x80u32, 0x01, 0xB1, 0x5A] {
+            for mirrored in [false, true] {
+                for shift in 0..8 {
+                    let visible = if mirrored {
+                        (pattern >> shift) & 1
+                    } else {
+                        ((pattern << shift) & 0x80) >> 7
+                    };
+                    let col = sprite_column(shift, mirrored);
+                    let decoded = (pattern >> (7 - col)) & 1;
+                    assert_eq!(visible, decoded, "pattern={pattern:#x} mirrored={mirrored} shift={shift}");
+                }
+            }
+        }
     }
 }

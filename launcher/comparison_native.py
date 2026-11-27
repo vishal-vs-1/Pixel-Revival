@@ -28,6 +28,7 @@ class ComparisonNativeWindows:
             "SystemParametersInfoW": ((w.UINT, w.UINT, c.c_void_p, w.UINT), w.BOOL),
             "GetWindowThreadProcessId": ((w.HWND, c.POINTER(w.DWORD)), w.DWORD),
             "GetWindowTextLengthW": ((w.HWND,), c.c_int),
+            "GetClassNameW": ((w.HWND, w.LPWSTR, c.c_int), c.c_int),
             "GetWindowRect": ((w.HWND, c.POINTER(w.RECT)), w.BOOL),
             "GetWindowLongPtrW": ((w.HWND, c.c_int), c.c_ssize_t),
             "SetWindowLongPtrW": ((w.HWND, c.c_int, c.c_ssize_t), c.c_ssize_t),
@@ -44,6 +45,15 @@ class ComparisonNativeWindows:
             function = getattr(self._user, name)
             function.argtypes = args
             function.restype = result
+        self._user.GetClientRect.argtypes = [w.HWND, c.POINTER(w.RECT)]
+        self._user.GetClientRect.restype = w.BOOL
+        self._dpi_context = getattr(self._user, 'GetWindowDpiAwarenessContext', None)
+        self._set_dpi_context = getattr(self._user, 'SetThreadDpiAwarenessContext', None)
+        if self._dpi_context is not None and self._set_dpi_context is not None:
+            self._dpi_context.argtypes = [w.HWND]
+            self._dpi_context.restype = c.c_void_p
+            self._set_dpi_context.argtypes = [c.c_void_p]
+            self._set_dpi_context.restype = c.c_void_p
 
     def find_players(self, pids):
         windows = {}
@@ -56,15 +66,27 @@ class ComparisonNativeWindows:
                 return True
             if not self._user.GetWindowTextLengthW(window):
                 return True
+            # JVM startup/helper windows can be larger than the actual player.
+            # GLFW owns GPU presentation; AWT frames are the CPU fallback.
+            renderer = self.renderer_kind(window)
+            if renderer is None:
+                return True
             rect = w.RECT()
             if self._user.GetWindowRect(window, c.byref(rect)):
                 area = (rect.right - rect.left) * (rect.bottom - rect.top)
-                if area >= 32_000 and area > windows.get(pid.value, (0, None))[0]:
-                    windows[pid.value] = area, window
+                score = (1 if renderer == 'GLFW30' else 0, area)
+                if area >= 32_000 and score > windows.get(pid.value, ((-1, 0), None))[0]:
+                    windows[pid.value] = score, window
             return True
 
         self._user.EnumWindows(collect, 0)
         return {pid: value[1] for pid, value in windows.items()}
+
+    def renderer_kind(self, window):
+        name = c.create_unicode_buffer(256)
+        if not self._user.GetClassNameW(window, name, len(name)):
+            return None
+        return name.value if name.value in ('GLFW30', 'SunAwtFrame') else None
 
     def style(self, window):
         return self._user.GetWindowLongPtrW(window, -16)
@@ -90,6 +112,13 @@ class ComparisonNativeWindows:
 
     def parent_of(self, window):
         return self._user.GetParent(window)
+
+    def owns_window(self, window, pid):
+        if not window or not self._user.IsWindow(window):
+            return False
+        owner = w.DWORD()
+        self._user.GetWindowThreadProcessId(window, c.byref(owner))
+        return owner.value == pid
 
     def embed(self, window, parent):
         style = self._user.GetWindowLongPtrW(window, -16)
@@ -123,14 +152,32 @@ class ComparisonNativeWindows:
                 raise c.WinError(c.get_last_error())
             actions.append("parent")
         flags = 0x0034  # keep Z order and focus, apply the frame change
-        if not self._user.SetWindowPos(window, None, 0, 0, max(1, width), max(1, height), flags):
-            raise c.WinError(c.get_last_error())
+        self._fit_child(window, width, height, flags)
         return actions
 
     def fit(self, window, width, height, *, show=False):
         flags = 0x0034 | (0x0060 if show else 0)  # keep Z order and focus, apply the frame change
-        if not self._user.SetWindowPos(window, None, 0, 0, max(1, width), max(1, height), flags):
-            raise c.WinError(c.get_last_error())
+        self._fit_child(window, width, height, flags)
+
+    def _fit_child(self, window, width, height, flags):
+        previous = None
+        # Tk and the embedded JVM can use different DPI contexts. Query and
+        # resize in the child's context so both operations use the same units.
+        if getattr(self, '_dpi_context', None) is not None and getattr(self, '_set_dpi_context', None) is not None:
+            context = self._dpi_context(window)
+            if context:
+                previous = self._set_dpi_context(context)
+        try:
+            parent = self._user.GetParent(window)
+            bounds = w.RECT()
+            if parent and self._user.GetClientRect(parent, c.byref(bounds)):
+                width = bounds.right - bounds.left
+                height = bounds.bottom - bounds.top
+            if not self._user.SetWindowPos(window, None, 0, 0, max(1, width), max(1, height), flags):
+                raise c.WinError(c.get_last_error())
+        finally:
+            if previous:
+                self._set_dpi_context(previous)
 
     def work_area(self):
         """Usable desktop rectangle so tiled players avoid the taskbar."""
@@ -197,7 +244,14 @@ class ComparisonNativeWindows:
         return self._user.GetFocus() == host
 
     def close(self, window):
-        self.release(window)
+        if not self._user.IsWindow(window):
+            return
+        try:
+            self.release(window)
+        except OSError as error:
+            # The JVM may destroy its window between discovery and detach.
+            if getattr(error, "winerror", None) != 1400:
+                raise
         if self._user.IsWindow(window):
             self._user.PostMessageW(window, 0x0010, 0, 0)
 

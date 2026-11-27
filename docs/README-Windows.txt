@@ -1,85 +1,43 @@
-Pixel Revival - Windows x64 preview
+Pixel Revival / JAR Revival - Windows preview
 
-START HERE
-1. Extract the entire ZIP to a folder you can write to.
-2. Open JAR Revival.exe. Keep the app and data folders beside it.
-   Python, Java, and Git do not need to be installed separately.
-3. In Java ME mode, click Import Java ME demo or use Add game to import a
-   Java ME JAR. Use the Java ME / NES switch to open the NES library.
-4. Select the game in your library, wait for its import to finish, then
-   open the Play tab. Tick Enhance play before Play to use prepared artwork.
+START
+Extract the whole ZIP into a writable folder and open JAR Revival.exe.
+Keep app/ and data/ beside it. Select Java ME or NES and add your own game.
+The Java ME demo is synthetic. Packaged previews may predate newer source fixes.
 
-The included Revival Demo is synthetic. No commercial game JAR is included.
-Fast pixel is ready immediately and works offline.
+PLAY
+Select a game and open Play. Enhance play uses cached general artwork.
+Missing replacements keep the original pixels. AI does not run on every frame.
+Settings contains separate keyboard profiles for Java ME and NES.
+Java ME supports GPU playback and per-game CPU compatibility.
+NES uses the bundled in-app Rust library.
 
-NES SETUP
-The ZIP includes our Rust NES player library under
-app\build\rust-nes-target\release. Add a .nes cartridge in NES mode and use
-Play or Enhance play. NES runs inside the app window; no separate emulator
-or runtime folder is needed. Enhanced records tiles during play and prepares
-replacements after you close the player.
+CHARACTER ART
+Use image and Use regenerated poses are mutually exclusive Play checkboxes.
+They are independent of Enhance play. Choose an image or regenerate a pose
+set in the artwork controls first. Java ME player poses need review/confirmation.
+NES player identification is experimental: it can miss poses or select enemies.
+Regenerate again when the saved pose set changes.
 
-KEYBOARD PROFILES
-1. Open Settings to edit up to three profiles for the active system.
-   Java ME and NES have separate slots. Use Capture or the key picker.
-2. Select a game, open its Play tab, and choose Default or a saved profile
-   from the Control profile list.
-3. Each game remembers its own profile choice. Editing a shared slot applies
-   to every game using it the next time those games start.
+CAPTURE AND COMPARISON
+Standalone Original and Enhanced capture artwork and pose candidates.
+Comparison uses shared keys and private save copies. Only Enhanced captures
+and applies the selected character artwork in comparison.
+F11 toggles comparison fullscreen. Java ME Escape leaves fullscreen before
+closing the windowed pair; NES Escape closes the pair directly.
+Java ME comparison game clocks are independent.
+Close players before using Artwork > Sync to recover missed/legacy captures.
+NES prepares captured tile artwork for a later Enhanced launch.
 
-Java ME movement, fire and softkeys must stay assigned. Its keypad actions
-can be unbound. NES profiles cover directions, A, B, Start and Select.
-Default uses the selected system's built-in bindings.
+ARTWORK STYLES
+Fast Pixel uses offline Scale2x. Redraw uses offline pixel tracing.
+AI Cartoon needs AI setup plus a working Vulkan driver. Its runtime/model
+download once; processing then runs locally. AI can change letters/details.
 
-GRAPHICS RENDERER
-The GPUs tab selects the physical Java ME playback device.
-CPU · compatibility is available per game in the Compatibility tab.
+FILES
+Keep data/ when upgrading: games, saves, settings, artwork and AI downloads
+live there. Keep an old installation until the new one shows your saves.
+License and dependency notices are bundled under app/.
 
-NES renders through its own Rust core and window. Enhanced artwork may look
-different without looking better.
-
-CHARACTER ARTWORK
-Java ME character artwork: use Play & record poses, then review and confirm
-player poses. Choose Regenerate all poses and then Play with regenerated poses
-for offline redrawn art. Choose image and Play with image use your own artwork
-instead. Both options fit replacements to the original pose's visible height.
-Run regeneration again after confirming more poses.
-NES enhancement uses prepared HD tile packs instead of player-pose images.
-
-OPTIONAL AI CARTOON
-The AI runtime and model are not included in this ZIP.
-1. Connect to the internet and open the Artwork tab.
-2. Click AI setup. Wait for the status at the bottom of the window to say
-   Local AI is installed. This downloads the official free Real-ESRGAN
-   runtime and models once into data\tools\ai in this folder.
-3. Choose AI cartoon in the Artwork style selector.
-4. For a game already in your library, select it and click Prepare.
-   For a new game, choose AI cartoon before Add game or Import demo.
-5. Open the Play tab, tick Enhance play, and click Play.
-
-AI requires a working Vulkan-capable graphics driver. After setup, AI runs
-locally and works offline. Your games and artwork are not uploaded.
-If the download fails, check the connection and click AI setup again.
-
-YOUR FILES
-app contains the bundled runtimes and support files. Keep it with the EXE.
-data contains your library, saves, settings, artwork cache, and downloaded AI.
-Keep data when upgrading. The app creates its contents as you use it.
-
-UPGRADING FROM THE EARLIER PREVIEW
-Close the old app. Copy its library and rendered-games folders into this
-version's data folder. If AI was already installed, copy the old tools\ai
-folder into data\tools\ai. Keep the old copy until your games and saves
-are visible in this version.
-
-NOTICES
-Project license: app\LICENSE
-Python, NumPy, Pillow notices: app\THIRD-PARTY-LICENSES
-Java notices: app\tools\runtime\legal
-Graphics notices: app\tools\gpu
-Shared graphics runtime and source: app\tools\common-runtime
-Rust NES player and build notes: app\build\rust-nes-target\release
-FreeJ2ME notice: inside app\build\jme-player.jar
-
-This is an experimental preview. Compatibility and artwork coverage vary
-by game. Import only game files you are allowed to use.
+Compatibility, capture coverage and performance vary by game and hardware.
+Import only games you are allowed to use; Java ME JARs execute code.

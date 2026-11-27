@@ -295,6 +295,19 @@ class AssetStore:
                    (int(priority), timestamp, source_id, recipe_key))
         return True
 
+    def enqueue_unqueued_sources(self, recipe_key: str) -> int:
+        """Queue indexed originals without changing any existing job or lease."""
+        with self._transaction() as db:
+            if db.execute("SELECT 1 FROM recipes WHERE recipe_key=?", (recipe_key,)).fetchone() is None:
+                raise KeyError("Register the recipe before queuing its enhancement")
+            # Recovery uses saved source rows so it never needs a PNG directory scan.
+            cursor = db.execute("""INSERT INTO jobs(source_id,recipe_key,state,priority,updated_at)
+                SELECT s.source_id,?,'QUEUED',0,? FROM sources s
+                WHERE NOT EXISTS (SELECT 1 FROM jobs j
+                                  WHERE j.source_id=s.source_id AND j.recipe_key=?)""",
+                                (recipe_key, time.time(), recipe_key))
+            return cursor.rowcount
+
     def enqueue(self, source_id: str, recipe_key: str, priority: int = 0,
                 *, now: float | None = None, force: bool = False) -> bool:
         timestamp = time.time() if now is None else float(now)
@@ -437,8 +450,28 @@ class AssetStore:
                                 (timestamp, source_id, recipe_key))
             return cursor.rowcount == 1
 
+    def recover_previous_service_jobs(self, current_owner: str) -> int:
+        """Requeue old launcher jobs after the caller acquires exclusive startup ownership."""
+        if not current_owner.startswith('asset-service-'):
+            raise ValueError('Expected a service lease owner')
+        with self._transaction() as db:
+            cursor = db.execute("""UPDATE jobs SET state='QUEUED',lease_owner=NULL,
+                lease_token=NULL,lease_until=NULL,next_attempt_at=NULL,
+                error='Recovered interrupted launcher job',updated_at=?
+                WHERE state='RUNNING' AND lease_owner LIKE 'asset-service-%'
+                  AND lease_owner<>?""", (time.time(), current_owner))
+            return cursor.rowcount
+
     def recover_expired(self, *, now: float | None = None) -> int:
         timestamp = time.time() if now is None else float(now)
+        # Idle polling should only take a writer lock when there is work due.
+        with self._read() as db:
+            due = db.execute("""SELECT
+                EXISTS(SELECT 1 FROM jobs WHERE state='RUNNING' AND lease_until<=?) OR
+                EXISTS(SELECT 1 FROM jobs WHERE state='FAILED' AND next_attempt_at<=?)""",
+                             (timestamp, timestamp)).fetchone()[0]
+        if not due:
+            return 0
         with self._transaction() as db:
             cursor = db.execute("""UPDATE jobs SET state='QUEUED',lease_owner=NULL,lease_token=NULL,
                                lease_until=NULL,next_attempt_at=NULL,error='Recovered expired worker lease',

@@ -15,7 +15,7 @@ class LauncherCatalog:
             self.nes_compat_frame.pack(fill='both',expand=True)
             self.desktop_fit_label.grid_remove()
             self.aspect_combo.grid(row=1,column=1,sticky='ew',padx=(12,0),pady=(5,0))
-            self.play_view_note.set('Enhance play uses cached artwork and records tiles and player poses for processing after close.')
+            self.play_view_note.set('Enhance play uses cached artwork. Image and regenerated poses are separate options; poses are recorded during play and processed after close.')
         else:
             self.nes_compat_frame.pack_forget()
             self.jme_compat_frame.pack(fill='both',expand=True)
@@ -239,16 +239,20 @@ class LauncherCatalog:
         waiting=work.get('QUEUED',0)+work.get('DEFERRED',0)
         count=work.get('READY',0) if work else self._preview_count
         if work:
-            active=work.get('RUNNING',0)
+            active=work.get('active_batch_images',work.get('RUNNING',0))
+            reserved=work.get('reserved_images',0)
             failed=work.get('FAILED',0)
             on_demand=work.get('on_demand',0)
             deferred_note=f' · {on_demand:,} on demand' if on_demand else ''
+            if reserved:
+                deferred_note+=f' / {reserved} reserved'
             live=work.get('live_reason') if work.get('player_active') else None
             self.cache_info.set(f'{count} enhanced · {waiting} waiting · {active} active'+
                                 (f' · {failed} need attention' if failed else '')+deferred_note)
             self.preparation_info.set(f'Artwork: {count} ready · {waiting} waiting · {active} active'+
                 (f' · {failed} failed' if failed else '')+(f'\nLive artwork: {live}' if live else '')+
-                (f"\n{work['resource_reason']}" if work.get('resource_reason') else ''))
+                (f"\n{work['resource_reason']}" if work.get('resource_reason') else '')+
+                (f'\n{reserved} reserved jobs awaiting completion or recovery.' if reserved else ''))
         elif count is None:
             self.cache_info.set('Saved artwork details are loading.' if self._preview_request
                                 else 'Saved artwork details are unavailable.')

@@ -254,6 +254,9 @@ class Win32FrameView:
         gdi.CreateCompatibleDC.restype = w.HDC
         gdi.CreateCompatibleBitmap.argtypes = [w.HDC, ctypes.c_int, ctypes.c_int]
         gdi.CreateCompatibleBitmap.restype = w.HBITMAP
+        gdi.CreateDIBSection.argtypes = [w.HDC, ctypes.POINTER(BITMAPINFO), w.UINT,
+                                       ctypes.POINTER(ctypes.c_void_p), w.HANDLE, w.DWORD]
+        gdi.CreateDIBSection.restype = w.HBITMAP
         gdi.SelectObject.argtypes = [w.HDC, w.HGDIOBJ]
         gdi.SelectObject.restype = w.HGDIOBJ
         gdi.BitBlt.argtypes = [w.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -313,7 +316,18 @@ class Win32FrameView:
             memdc = self._gdi.CreateCompatibleDC(hdc_screen)
             if not memdc:
                 return None
-            membmp = self._gdi.CreateCompatibleBitmap(hdc_screen, width, height)
+            # A device-dependent bitmap can force GPU readback when software
+            # scaling writes it. Keep the back buffer in CPU-owned 32-bit memory.
+            info = BITMAPINFO()
+            info.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            info.bmiHeader.biWidth = width
+            info.bmiHeader.biHeight = -height
+            info.bmiHeader.biPlanes = 1
+            info.bmiHeader.biBitCount = 32
+            info.bmiHeader.biCompression = BI_RGB
+            bits = ctypes.c_void_p()
+            membmp = self._gdi.CreateDIBSection(memdc, ctypes.byref(info), DIB_RGB_COLORS,
+                                               ctypes.byref(bits), None, 0)
             if not membmp:
                 self._gdi.DeleteDC(memdc)
                 return None

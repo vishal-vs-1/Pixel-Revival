@@ -50,7 +50,9 @@ class JavaMeSystem:
     def prepare_style(self, game, backend, progress):
         return self._library.prepare_style(self._legacy_game(game), backend, progress)
 
-    def launch(self, game, original=False, **kwargs):
+    def launch(self, game, original=False, *, host_parent=None, **kwargs):
+        # The launcher supplies its Tk host for in-process systems. Java ME
+        # owns external player windows, so consume that UI context here.
         legacy = self._legacy_game(game)
         result = self._library.launch(legacy, original, **kwargs)
         # Startup repair may refresh the hint that the App displays after launch.

@@ -1,7 +1,5 @@
-"""Artwork admission policy for large offline sprite catalogues."""
+"""Source provenance for large offline sprite catalogues."""
 import json
-
-from .contracts import SourceKind
 
 PACKED_SPRITE_DECODER = 'gameloft-indexed-sprites-v1'
 LARGE_PACKED_CATALOGUE = 512
@@ -26,11 +24,3 @@ def packed_only_sources(workspace):
         return packed - regular
     except (OSError, ValueError, AttributeError, KeyError, TypeError):
         return set()
-
-
-def on_demand_packed(recipe):
-    return recipe.algorithm == 'realesrgan-x4plus-anime'
-
-
-def wait_for_capture(source, recipe):
-    return source.origin == SourceKind.PACKED_OFFLINE and on_demand_packed(recipe)

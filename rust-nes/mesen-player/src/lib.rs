@@ -652,6 +652,73 @@ pub unsafe extern "C" fn rs_capture_export(
     result.unwrap_or(-1)
 }
 
+/// Copy the current PPU sprite/OAM observation for pose recording.
+/// Layout: 1 byte large-sprite flag, u16 LE sprite pattern base, 256 OAM
+/// bytes, 32 palette bytes. Returns 291 on success.
+#[no_mangle]
+pub unsafe extern "C" fn rs_observation(
+    player: *mut RsPlayer,
+    out: *mut c_uchar,
+    out_len: usize,
+    err: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    const SIZE: usize = 1 + 2 + 0x100 + 0x20;
+    if player.is_null() || out.is_null() || out_len < SIZE {
+        write_err(err, err_len, "observation buffer is null or too small");
+        return -1;
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let game = &mut *player;
+        let observation = game.emu.observation();
+        *out = if observation.large_sprites { 1 } else { 0 };
+        *out.add(1) = observation.sprite_pattern_addr as u8;
+        *out.add(2) = (observation.sprite_pattern_addr >> 8) as u8;
+        ptr::copy_nonoverlapping(observation.oam.as_ptr(), out.add(3), 0x100);
+        ptr::copy_nonoverlapping(observation.palette.as_ptr(), out.add(3 + 0x100), 0x20);
+        SIZE as c_int
+    }));
+    result.unwrap_or(-1)
+}
+
+/// Optional pose observation protocol: fixed 25-byte original 8x8 sprite cells.
+#[no_mangle]
+pub extern "C" fn rs_pose_version() -> c_uint { 2 }
+
+#[no_mangle]
+pub unsafe extern "C" fn rs_pose_arm(
+    handle: *mut RsPlayer, active: c_uchar, err: *mut c_char, err_len: usize,
+) -> c_int {
+    with_player(handle, err, err_len, |emu| { emu.pose_arm(active != 0); 0 })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rs_pose_frame(
+    handle: *mut RsPlayer, out: *mut c_uchar, out_len: usize,
+    err: *mut c_char, err_len: usize,
+) -> c_int {
+    if out.is_null() || out_len < 4 + 128 * 25 {
+        write_err(err, err_len, "pose output buffer is too small");
+        return -1;
+    }
+    with_player(handle, err, err_len, |emu| {
+        let (x, y) = emu.pose_camera().unwrap_or((65535, 65535));
+        ptr::copy_nonoverlapping(x.to_le_bytes().as_ptr(), out, 2);
+        ptr::copy_nonoverlapping(y.to_le_bytes().as_ptr(), out.add(2), 2);
+        let mut count = 0;
+        for cell in emu.pose_cells().take(128) {
+            let target = out.add(4 + count * 25);
+            *target = cell.x; *target.add(1) = cell.y; *target.add(2) = cell.flags;
+            *target.add(3) = 0;
+            ptr::copy_nonoverlapping(cell.index.to_le_bytes().as_ptr(), target.add(4), 2);
+            ptr::copy_nonoverlapping(cell.palette.as_ptr(), target.add(6), 3);
+            ptr::copy_nonoverlapping(cell.pattern.as_ptr(), target.add(9), 16);
+            count += 1;
+        }
+        count as c_int
+    })
+}
+
 /// Copy 16 CHR pattern bytes for tile `index` (8 low rows, then 8 high).
 #[no_mangle]
 pub unsafe extern "C" fn rs_tile_pattern(

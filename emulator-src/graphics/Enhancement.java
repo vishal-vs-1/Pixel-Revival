@@ -31,12 +31,17 @@ public final class Enhancement {
     /** Decode a bounded warm cache before game startup, avoiding texture changes mid-animation. */
     public static void preload() {
         if(SCALE==1)return;
+        long deadline=System.nanoTime()+100000000L;
+        int decoded=0;
         for(File directory:new File[]{new File(PACK,"textures-ui"),new File(System.getProperty("jme.textures",new File(PACK,"textures").getPath()))}) {
             File[] files=directory.listFiles((dir,name)->name.endsWith(".png"));if(files==null)continue;
             Arrays.sort(files);
             for(File file:files) {
+                // Tiny assets can number in the thousands without filling the
+                // byte cache. Bound startup work by time and count as well.
+                if(decoded>=128||System.nanoTime()>=deadline||decodedBytes>=CACHE_BYTES*3/4)return;
                 try {decode(file);}catch(Exception error){System.err.println("Artwork preload: "+error);}
-                if(decodedBytes>=CACHE_BYTES*3/4)break;
+                decoded++;
             }
         }
     }

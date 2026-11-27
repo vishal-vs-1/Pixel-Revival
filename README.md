@@ -1,67 +1,51 @@
 # Pixel Revival
 
-[![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](LICENSE)
+A Windows launcher for Java ME and NES games with optional local artwork enhancement. The desktop app is named **JAR Revival**.
 
-**A Windows emulator for Java ME and NES games with optional local artwork enhancement.**
+Java ME uses patched FreeJ2ME-Plus. NES uses the vendored Rust core through `mesen_player.dll` inside the app. Bring your own `.jar` or `.nes` files; the included Java ME demo is synthetic.
 
-Import your own `.jar` or `.nes` files, switch between the two libraries, and compare original artwork with cached enhancements. Pixel Revival uses [FreeJ2ME-Plus](https://github.com/TASEmulators/freej2me-plus) for Java ME and our own in-tool Rust NES player (a from-scratch port of Mesen 0.9.9) for NES. The Windows launcher appears as **JAR Revival**.
+## Why the NES player changed
 
-<p align="center">
-  <img src="docs/images/revival-demo-gameplay.png" alt="Gameplay from the included synthetic Java ME demo" width="360">
-  <br><em>The included synthetic Java ME demo.</em>
-</p>
+We replaced the separate managed Mesen player and its bridge with a Rust library called directly by Python. This gives the app ownership of the player window, controls, comparison, audio delivery and artwork hooks through one integration path.
 
-## Play on Windows
+The emulator core is a reused Rust port of Mesen 0.9.9. Our work is the C API wrapper, in-app player, HD artwork integration and capture/pose extensions. The core remains separate from the launcher in `rust-nes/mesen-core/`; it was not rewritten from scratch for this app. We vendor its source so builds do not depend on an external checkout. See [architecture and migration details](docs/PROJECT_FLOW.md#why-the-nes-player-changed).
 
-1. Extract the entire Windows preview ZIP and open **JAR Revival.exe**. Keep the `app/` and `data/` folders next to it. The preview includes the Java runtime, synthetic demo, and the Rust NES library.
-2. Use the **Java ME / NES** switch in the sidebar. In Java ME mode, choose **Import Java ME demo** or **Add game**. In NES mode, add a `.nes` file. From source, build the Rust player first as described in the [development guide](docs/DEVELOPMENT.md#nes-setup).
-3. Click **Play** to use original artwork, or check **Enhance play** before clicking **Play** to use prepared artwork and capture more during gameplay.
-4. Open **Settings** to edit up to three keyboard profiles per system. Pick a saved profile or **Default** on each game's **Play** tab.
+## Use the app
 
-Saves, settings and cached artwork live in `data/` in the portable app. Keep that folder when upgrading. Bring your own games. The package includes a synthetic demo.
+1. Select **Java ME** or **NES**, add a game, and open **Play**.
+2. **Enhance play** selects prepared artwork. Missing replacements keep original pixels.
+3. Optionally select **Use image** or **Use regenerated poses** for character replacement. These choices are mutually exclusive and independent of Enhance play.
+4. **Compare side by side** opens Original and Enhanced with shared keys. Only Enhanced captures artwork and applies character replacements in comparison.
+5. Use **Settings** for keyboard profiles, **Artwork** to prepare images, and **Sync** to reconcile missed captures while players are closed.
 
-## Artwork and display
+Normal standalone Original and Enhanced capture artwork and pose candidates. Java ME player poses require review and confirmation. NES identification is experimental and can miss the player or select enemies. See [current status](docs/STATUS.md).
 
-| Option | What it does |
-| --- | --- |
-| **Original** | Plays with the game's original artwork, in our window. |
-| **Fast Pixel** | Uses Scale2x for sharper, smoother edges with the original colors. It works offline. |
-| **AI Cartoon** | Uses optional local Real-ESRGAN to redraw supported artwork. It can change lettering and fine details. |
-| **Redraw (no outlines)** | Traces color regions with the offline pixel-art tool. Choose it under Artwork and select Prepare for NES or Java ME. |
+Keep portable `data/` when upgrading: it contains games, saves, settings and artwork. An existing preview ZIP may predate the current source behavior; see its bundled guide.
 
-Choose a style in **Artwork** and click **Prepare** to change it for an imported game. Use **AI setup** to install the optional Vulkan runtime and model. The download happens once and inference runs locally. See the [artwork comparisons](docs/ARTWORK.md) for examples of how the two styles differ.
+## Artwork styles
 
-Java ME prepares supported resources on import and can discover additional artwork during play. NES Enhanced uses the prepared pack while you play in-tool; new tiles are recorded during Enhanced play and prepared after the game closes. Reopen the game to use the ready pack. Newly encountered tiles can use the original artwork until replacements are ready. Visual results and compatibility vary by game.
+| Style | Processing |
+|---|---|
+| Fast Pixel | Offline Scale2x |
+| AI Cartoon | Optional local Real-ESRGAN; requires setup and a working Vulkan driver |
+| Redraw (no outlines) | Offline pixel tracing |
 
-### Compare side by side
-
-On the **Play** tab, choose **Compare side by side**. Both panes open in one window: Original on the left and Enhanced on the right using the current artwork cache. Each pane keeps a private copy of the same saved progress, and one keyboard controls both. Press **F11** for fullscreen; **Esc** closes the pair.
-
-### Character artwork
-
-Check **Enhance play**, then click **Play** to use the prepared NES pack in our window. The window opens maximized and fits the game at whole-number scale (4x when the screen allows); **F11** toggles fullscreen. Tiles seen during Enhanced play are prepared for later launches.
-
-Java ME character artwork: review the captured artwork and confirm the player poses, then use **Regenerate all poses**, **Choose image**, **Play with regenerated poses**, or **Play with image**. Both playback modes fit each replacement to the pose's original visible height. See [supported replays and current coverage](docs/PROJECT_FLOW.md#playable-sprite-replacement).
-
-Java ME uses its compatibility GPU renderer. **GPUs** selects the playback device, and **Compatibility** offers per-game CPU playback. NES plays and composites Enhanced frames in-tool on the Rust core.
+Prepared artwork is cached. Enhancement is not performed on every game frame. AI can change lettering and details; [examples](docs/ARTWORK.md) show saved outputs.
 
 ## Run from source
 
-Use Windows 10 or 11, Python 3.12+ with Tkinter, a JDK 17+ with `javac` and `jlink`, Git, and the stable Rust toolchain for the NES player.
+Windows, Python 3.12+ with Tkinter, JDK 17+ and a stable Rust toolchain are required for the respective builds.
 
-~~~powershell
+```powershell
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe tools/build.py
-$env:CARGO_TARGET_DIR = "build/rust-nes-target"
-cargo build --release --manifest-path rust-nes/Cargo.toml -p mesen-player
+cargo build --release --manifest-path rust-nes/Cargo.toml -p mesen-player --target-dir build/rust-nes-target
 .\.venv\Scripts\python.exe app.py
-~~~
+```
 
-Follow the [development guide](docs/DEVELOPMENT.md) to build the shared native graphics runtime, build the Rust NES player, run checks, or create the portable ZIP. [Project flow](docs/PROJECT_FLOW.md) describes the two emulators and shared pipeline. See also [asset discovery](docs/ASSET_DECODING.md), [performance notes](docs/PERFORMANCE.md), and the [CI workflow](.github/workflows/ci.yml).
-
-See the [experiment history](docs/EXPERIMENTS.md) for what was tried and what the results showed. The detailed local records are indexed in `local-work/README.md` when present.
+The [documentation index](docs/README.md) links the current architecture, status, setup, asset contracts and performance notes. Older designs and measurements are historical records, not active architecture specifications.
 
 ## License
 
-The project is GPL-3.0-or-later. FreeJ2ME-Plus, the Rust NES core (Mesen 0.9.9 port), the optional AI model, and bundled dependencies have their own notices and terms. Import only games you are allowed to use. Java ME JARs contain executable code and should come from a source you trust.
+GPL-3.0-or-later; see [LICENSE](LICENSE) and dependency notices. Import games you are allowed to use. Java ME JARs execute code and should come from a source you trust.

@@ -16,11 +16,58 @@ from runtime_assets.store import AssetStore
 from systems.application import ApplicationLibrary
 from systems.contracts import GameRef, ImportRequest, JAVA_ME, NES
 from systems.jme.system import JavaMeSystem
+from systems.jme.playback import JavaMePlayback
 from systems.presentation import SystemPresentation
 
 
 JAVA_ID = "a" * 64
 NES_ID = "b" * 64
+
+
+def test_launcher_comparison_crosses_real_java_adapter_without_forwarding_tk_context(tmp_path, monkeypatch):
+    from threading import RLock
+    playback = JavaMePlayback()
+    playback.lock = RLock()
+    playback._players = {}
+    playback._check_not_deleting = Mock()
+    playback.workspace = lambda _identity: tmp_path
+    game = {'id': JAVA_ID, 'name': 'Java fixture', 'system': JAVA_ME}
+    playback.games = lambda: [game]
+    original, enhanced = Mock(), Mock()
+    original.poll.return_value = enhanced.poll.return_value = None
+    calls = []
+
+    # Deliberately strict: a generic Mock here concealed the host_parent bug.
+    def launch(view, original, *, comparison_saves, pose_mode):
+        calls.append((view, original, pose_mode))
+        return (players[0 if original else 1], tmp_path / ('original.log' if original else 'enhanced.log'))
+
+    players = [original, enhanced]
+    playback._launch = launch
+    library = ApplicationLibrary((JavaMeSystem(playback),), Mock())
+    app = App.__new__(App)
+    app.library = library
+    app.root = object()
+    app.players = {}
+    app.status = Mock()
+    app.progress = Mock()
+    app.messages = Queue()
+
+    class Immediate:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr('launcher.playback.threading', SimpleNamespace(Thread=Immediate))
+    app.start_comparison(game)
+    kind, result = app.messages.get_nowait()
+    assert kind == 'comparison_started', result
+    assert [original for _, original, _ in calls] == [True, False]
+    assert [pose_mode for _, _, pose_mode in calls] == [None, 'record']
+    assert all('system' not in view for view, _, _ in calls)
+    assert result[1].players == players
 
 
 def mixed():
@@ -31,6 +78,64 @@ def mixed():
     java = JavaMeSystem(legacy)
     service = Mock()
     return ApplicationLibrary((java, nes), service), legacy, nes, service
+
+
+def test_asset_callback_can_route_while_catalog_waits_on_a_backend():
+    from threading import Event, Thread
+    library, legacy, _nes, _service = mixed()
+    library.games()
+    scanning, release, routed = Event(), Event(), Event()
+
+    def slow_catalog():
+        scanning.set()
+        assert release.wait(2)
+        return [{'id': JAVA_ID, 'name': 'Java'}]
+
+    legacy.games.side_effect = slow_catalog
+    scan = Thread(target=library.games)
+    callback = Thread(target=lambda: (library.reference(JAVA_ID), routed.set()))
+    scan.start()
+    try:
+        assert scanning.wait(1)
+        callback.start()
+        assert routed.wait(1), 'asset callback waits on the catalog lock'
+    finally:
+        release.set()
+        scan.join(2)
+        if callback.ident is not None:
+            callback.join(2)
+
+
+def test_catalog_refresh_does_not_lose_a_concurrent_import(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    library, legacy, _nes, _service = mixed()
+    library.games()
+    rows = [{'id': JAVA_ID, 'name': 'Java'}]
+    scanned, release = Event(), Event()
+    calls = 0
+
+    def snapshot_catalog():
+        nonlocal calls
+        calls += 1
+        snapshot = list(rows)
+        if calls == 1:
+            scanned.set()
+            assert release.wait(2)
+        return snapshot
+
+    imported = {'id': 'c' * 64, 'name': 'New game'}
+    legacy.games.side_effect = snapshot_catalog
+    legacy.import_game.side_effect = lambda *_: (rows.append(imported) or imported)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(library.games)
+        try:
+            assert scanned.wait(1)
+            library.import_game(ImportRequest(JAVA_ME, tmp_path / 'new.jar', 'pixel'))
+        finally:
+            release.set()
+        assert {game['id'] for game in future.result(timeout=2)} == {JAVA_ID, NES_ID, imported['id']}
+    assert library.reference(imported['id']) == GameRef(JAVA_ME, imported['id'])
 
 
 def test_hidden_catalog_rows_keep_their_owner_across_application_operations(tmp_path):
@@ -62,6 +167,9 @@ def test_hidden_catalog_rows_keep_their_owner_across_application_operations(tmp_
     log = tmp_path / "play.stats.json"
     library.set_player_state(NES_ID, True, log, allow_live=False)
     service.set_player_state.assert_called_once_with(NES_ID, True, log, allow_live=False)
+    service.reconcile.return_value = 4
+    assert library.sync_artwork(rom) == 4
+    service.reconcile.assert_called_once_with(NES_ID)
     library.delete_game(NES_ID)
     nes.delete_game.assert_called_once_with(NES_ID)
     legacy.delete_game.assert_not_called()

@@ -89,9 +89,13 @@ public final class GpuPlayer {
                     MobilePlatform.fileName=new File(args[0]).toURI().toString();
                     if(!platform.load(MobilePlatform.fileName))throw new IllegalStateException("Game could not be loaded");
                     Mobile.config.settings.put("scrwidth",""+logicalWidth);Mobile.config.settings.put("scrheight",""+logicalHeight);
-                    Mobile.updateSettings();platform.setPainter(()->{});platform.runJar();
+                    Mobile.updateSettings();platform.setPainter(()->{});
                     ComparisonInput.start((token,pressed)->comparisonKeys.add(
-                        ()->dispatchComparisonKey(token,pressed)));
+                        ()->dispatchComparisonKey(token,pressed)),
+                        ()->comparisonKeys.add(()->glfwSetWindowShouldClose(nativeWindow,true)));
+                    // MIDlet startApp may run its own game loop and never return.
+                    // Controls must be ready before entering game-owned code.
+                    platform.runJar();
                 }catch(Throwable error){gameFailure=error;error.printStackTrace();glfwSetWindowShouldClose(nativeWindow,true);}
             },"game-runtime");
             game.setDaemon(true);game.start();

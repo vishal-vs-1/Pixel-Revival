@@ -20,6 +20,79 @@ def minimal_nrom():
     return bytes(header) + bytes(16384) + bytes(8192)
 
 
+def _sprite_test_nrom(large):
+    """Draw asymmetric sprites with all OAM flip combinations on real PPU frames."""
+    program = bytearray([0x78, 0xD8, 0xA2, 0xFF, 0x9A])
+
+    def write(address, value):
+        program.extend((0xA9, value, 0x8D, address & 255, address >> 8))
+
+    write(0x2000, 0)
+    write(0x2001, 0)
+    write(0x2003, 0)
+    # Clear all OAM, then install four visible instances.
+    program.extend((0xA2, 0, 0xA9, 255, 0x8D, 4, 0x20, 0xE8, 0xD0, 0xFA))
+    write(0x2003, 0)
+    for index, flags in enumerate((0, 0x40, 0x80, 0xC0)):
+        for value in (80, 2 if large else 1, flags, 32 + index * 48):
+            write(0x2004, value)
+    write(0x2006, 0x3F)
+    write(0x2006, 0)
+    palette = [15] * 32
+    palette[17:20] = [22, 39, 24]
+    for value in palette:
+        write(0x2007, value)
+    write(0x2000, 0x20 if large else 0)
+    write(0x2001, 0x14)
+    loop = 0x8000 + len(program)
+    program.extend((0x4C, loop & 255, loop >> 8))
+    prg = bytearray(16384)
+    prg[:len(program)] = program
+    prg[-6:] = bytes((0, 128, 0, 128, 0, 128))
+    chr_data = bytearray(8192)
+    for tile in (1, 2, 3):
+        chr_data[tile * 16:tile * 16 + 16] = bytes(
+            [((0x81 >> row) | (tile << row)) & 255 for row in range(8)] +
+            [(0xC1 ^ (row * (tile + 5))) & 255 for row in range(8)])
+    return minimal_nrom()[:16] + prg + chr_data
+
+
+@needs_dll
+@pytest.mark.parametrize('scale', [2, 4])
+@pytest.mark.parametrize('large', [False, True])
+def test_native_art_pack_preserves_real_sprite_pixels_and_all_flips(scale, large):
+    from PIL import Image
+    from systems.nes.tiles import Tile
+
+    core = RustCore(DLL)
+    handle = core.create(_sprite_test_nrom(large))
+    hd = core.hd_create(scale)
+    width, height = core.hd_output_size(hd)
+    out = bytearray(width * height * 4)
+    try:
+        core.hd_arm(handle, True)
+        core.capture_arm(handle, True)
+        for _ in range(3):
+            core.hd_run_frame(handle, hd, out)
+        keys = core.capture_export(handle)
+        assert any(key >> 63 for key in keys), 'fixture did not render sprites'
+        palette = core.standard_palette()
+        for key in keys:
+            sprite, index, colors = bool(key >> 63), (key >> 32) & 0x7FFFFFFF, key & 0xFFFFFFFF
+            tile = Tile(0, index, colors, core.tile_pattern(handle, index), False, sprite, sprite)
+            art = tile.image(palette).resize((8 * scale, 8 * scale), Image.Resampling.NEAREST)
+            core.hd_add_tile(hd, sprite=sprite, chr_index=index, palette=colors,
+                             rgba=art.tobytes(), size=8 * scale)
+        core.hd_run_frame(handle, hd, out)
+        native = Image.frombytes('RGB', (256, 240), core.framebuffer(handle)[0], 'raw', 'BGRX')
+        enhanced = Image.frombytes('RGB', (width, height), bytes(out), 'raw', 'BGRX')
+        assert core.hd_stats(hd)[1] > 0
+        assert enhanced.tobytes() == native.resize((width, height), Image.Resampling.NEAREST).tobytes()
+    finally:
+        core.hd_destroy(hd)
+        core.destroy(handle)
+
+
 @needs_dll
 def test_garbage_rom_is_rejected_with_a_message():
     core = RustCore(DLL)
@@ -63,6 +136,50 @@ def test_audio_feeder_opens_and_closes_without_raising(tmp_path):
         out.feed(bytes(2048 * 2))
     finally:
         out.stop()
+
+
+@needs_dll
+def test_blocked_native_present_does_not_stall_emulation_frames(tmp_path):
+    import threading
+    import time
+
+    root = _display()
+    player = None
+    entered, release = threading.Event(), threading.Event()
+    try:
+        source = tmp_path / 'game.nes'
+        source.write_bytes(minimal_nrom())
+        runtime = RustNesRuntime()
+        player, _ = runtime.launch({'id': 'd' * 64, 'name': 'Slow display fixture'},
+                                   source, tmp_path / 'workspace', original=True,
+                                   host_parent=root)
+        assert player._native_view is not None
+        deadline = time.monotonic() + 2
+        while not player._direct_present and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.005)
+        assert player._direct_present, 'native display did not become ready'
+        present = player._native_view.present
+
+        def blocked(*args):
+            entered.set()
+            assert release.wait(4)
+            present(*args)
+
+        player._native_view.present = blocked
+        assert entered.wait(1)
+        initial = player._frames
+        deadline = time.monotonic() + 1
+        while player._frames < initial + 10 and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.005)
+        assert player._frames >= initial + 10, 'a screen blit stalled the emulator'
+        assert not release.is_set()
+    finally:
+        release.set()
+        if player is not None:
+            player.close()
+        root.destroy()
 
 
 def _display():
@@ -304,7 +421,16 @@ def test_comparison_opens_two_in_tool_players(tmp_path):
             assert pair.owns_window and type(pair).__name__ == "RustComparisonPlayers"
             original, enhanced = pair.players
             assert type(original).__name__ == type(enhanced).__name__ == "RustNesPlayer"
+            assert not original._record_poses
+            if runtime._core.observation_supported:
+                assert enhanced._record_poses
+                assert enhanced._pose_journal == workspace.resolve() / "playable-assets" / "live-recording.tsv"
             assert original._hd is None, "Original pane must not composite a pack"
+            if runtime._core.capture_supported:
+                assert original._capture_hd is None
+                assert original._capture_workspace == workspace.resolve()
+                assert enhanced._capture_workspace == workspace.resolve()
+                assert enhanced._capture_armed
             assert enhanced._hd is not None, "Enhanced pane did not load the pack"
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline and min(p._frames for p in pair.players) < 5:
@@ -323,3 +449,27 @@ def test_comparison_opens_two_in_tool_players(tmp_path):
         assert all(player.poll() == 0 for player in pair.players)
     finally:
         root.destroy()
+
+
+@needs_dll
+@pytest.mark.parametrize('large', [False, True])
+def test_pose_fetch_exports_the_rendered_original_patterns(large):
+    core = RustCore(DLL)
+    if not core.pose_observation_supported:
+        pytest.skip('optional sprite-fetch observer not built')
+    rom = _sprite_test_nrom(large)
+    handle = core.create(rom)
+    try:
+        core.pose_arm(handle)
+        for _ in range(4):
+            core.run_frame(handle)
+        cells = core.pose_frame(handle)
+        assert len(cells) == (8 if large else 4)
+        for cell in cells:
+            index = int.from_bytes(cell[4:6], 'little')
+            assert cell[9:25] == rom[-8192:][index * 16:index * 16 + 16]
+            assert cell[6:9] == bytes((22, 39, 24))
+        core.pose_arm(handle, False)
+        assert core.pose_frame(handle) is None
+    finally:
+        core.destroy(handle)
