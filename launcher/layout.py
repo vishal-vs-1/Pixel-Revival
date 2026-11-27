@@ -13,7 +13,7 @@ from launcher.labels import GPU_CHOICES, SYSTEM_LABELS, ARTWORK_LABELS
 
 
 def build_window(self, root, java_library):
-    root.title('JAR Revival — Java ME & NES')
+    root.title('Pixel Revival — Java ME & NES')
     root.geometry('1140x740')
     root.minsize(980, 680)
     self.bg, self.panel, self.card = '#0c121c', '#121c29', '#192636'

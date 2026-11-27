@@ -1,14 +1,14 @@
 # Pixel Revival
 
-A Windows launcher for Java ME and NES games with optional local artwork enhancement. The desktop app is named **JAR Revival**.
+A Windows launcher for Java ME and NES games with optional local artwork enhancement.
 
 Java ME uses patched FreeJ2ME-Plus. NES uses the vendored Rust core through `mesen_player.dll` inside the app. Bring your own `.jar` or `.nes` files; the included Java ME demo is synthetic.
 
 ## Why the NES player changed
 
-We replaced the separate managed Mesen player and its bridge with a Rust library called directly by Python. This gives the app ownership of the player window, controls, comparison, audio delivery and artwork hooks through one integration path.
+Pixel Revival replaces the separate managed Mesen player and its bridge with a Rust library called directly by Python. This gives the app ownership of the player window, controls, comparison, audio delivery and artwork hooks through one integration path.
 
-The emulator core is a reused Rust port of Mesen 0.9.9. Our work is the C API wrapper, in-app player, HD artwork integration and capture/pose extensions. The core remains separate from the launcher in `rust-nes/mesen-core/`; it was not rewritten from scratch for this app. We vendor its source so builds do not depend on an external checkout. See [architecture and migration details](docs/PROJECT_FLOW.md#why-the-nes-player-changed).
+The emulator core is a reused Rust port of Mesen 0.9.9. Project additions include the C API wrapper, in-app player, HD artwork integration and capture/pose extensions. The core remains separate from the launcher in `rust-nes/mesen-core/`; it was not rewritten from scratch for this app. Its source is vendored so builds do not depend on an external checkout. See [architecture and migration details](docs/PROJECT_FLOW.md#why-the-nes-player-changed).
 
 ## Use the app
 
@@ -44,7 +44,7 @@ cargo build --release --manifest-path rust-nes/Cargo.toml -p mesen-player --targ
 .\.venv\Scripts\python.exe app.py
 ```
 
-The [documentation index](docs/README.md) links the current architecture, status, setup, asset contracts and performance notes. Older designs and measurements are historical records, not active architecture specifications.
+The [high-level design](docs/PROJECT_FLOW.md) describes components, process boundaries, data ownership, runtime flows and design decisions. The [low-level design](docs/LOW_LEVEL_DESIGN.md) maps those boundaries to implementation contracts. The [documentation index](docs/README.md) also links status, setup, asset contracts and performance notes.
 
 ## License
 

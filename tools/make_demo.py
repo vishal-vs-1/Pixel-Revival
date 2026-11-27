@@ -31,7 +31,7 @@ def build_demo(classes):
     with zipfile.ZipFile(ROOT/'fixtures/RevivalDemo.jar','w',zipfile.ZIP_DEFLATED) as jar:
         manifest=zipfile.ZipInfo('META-INF/MANIFEST.MF',(2026,1,1,0,0,0))
         manifest.compress_type=zipfile.ZIP_DEFLATED
-        jar.writestr(manifest,'Manifest-Version: 1.0\nMIDlet-Name: Revival Demo\nMIDlet-Version: 1.0\nMIDlet-Vendor: JAR Revival\nMIDlet-1: Revival Demo,/car.png,RevivalDemo\nMicroEdition-Profile: MIDP-2.0\nMicroEdition-Configuration: CLDC-1.1\n\n')
+        jar.writestr(manifest,'Manifest-Version: 1.0\nMIDlet-Name: Revival Demo\nMIDlet-Version: 1.0\nMIDlet-Vendor: Pixel Revival\nMIDlet-1: Revival Demo,/car.png,RevivalDemo\nMicroEdition-Profile: MIDP-2.0\nMicroEdition-Configuration: CLDC-1.1\n\n')
         for p in sorted(output.iterdir()):
             # Stable archive metadata makes repeated builds import as the same game.
             info=zipfile.ZipInfo(p.name,(2026,1,1,0,0,0))

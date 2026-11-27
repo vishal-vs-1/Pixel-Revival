@@ -29,7 +29,7 @@ def destroy_widget(widget):
 def display():
     try:window=tk.Tk()
     except tk.TclError as error:pytest.skip(f'Tk display unavailable: {error}')
-    window.title('JAR Revival UI test — test data only')
+    window.title('Pixel Revival UI test — test data only')
     yield window
     for callback in window.tk.call('after','info'):window.after_cancel(callback)
     destroy_widget(window)
@@ -77,7 +77,7 @@ def make_app(root,monkeypatch,base,*,count=20):
     monkeypatch.setattr('runtime_assets.ai.available',lambda:False)
     app=App(root)
     root.geometry('980x680')
-    root.title('JAR Revival UI check — test data only')
+    root.title('Pixel Revival UI check — test data only')
     root.update()
     return app,library
 

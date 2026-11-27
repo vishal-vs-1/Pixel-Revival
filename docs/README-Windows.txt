@@ -1,7 +1,7 @@
-Pixel Revival / JAR Revival - Windows preview
+Pixel Revival - Windows preview
 
 START
-Extract the whole ZIP into a writable folder and open JAR Revival.exe.
+Extract the whole ZIP into a writable folder and open Pixel Revival.exe.
 Keep app/ and data/ beside it. Select Java ME or NES and add your own game.
 The Java ME demo is synthetic. Packaged previews may predate newer source fixes.
 

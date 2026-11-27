@@ -2,6 +2,8 @@
 
 Source snapshot: **26 November 2026**. This page separates implemented behavior from acceptance. Earlier preview packages and historical design checklists may differ.
 
+Documentation and naming update, **27 November 2026**: the [HLD](PROJECT_FLOW.md) now covers system context, component boundaries, data ownership, lifecycles, concurrency, recovery and design decisions, with a separate [LLD](LOW_LEVEL_DESIGN.md) for implementation contracts. Current launcher/player source and future desktop packages use **Pixel Revival**. Existing binaries and preview ZIPs retain their compiled names until rebuilt; stored game data and compatibility identifiers are unchanged. This update does not resolve the gameplay acceptance items below.
+
 | Area | Implemented | Evidence or remaining limit |
 |---|---|---|
 | Java ME playback | Patched FreeJ2ME GPU compatibility and CPU modes | Game/driver compatibility and audible quality require ordinary gameplay acceptance |

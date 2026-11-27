@@ -55,7 +55,7 @@ def devices(refresh=False):
         vk.vkGetPhysicalDeviceProperties.argtypes=[C.c_void_p,C.c_void_p]
         vk.vkGetPhysicalDeviceMemoryProperties.argtypes=[C.c_void_p,C.POINTER(MemoryProperties)]
         vk.vkDestroyInstance.argtypes=[C.c_void_p,C.c_void_p]
-        app=App(0,None,b'JAR Revival',1,b'JAR Revival',1,1<<22)
+        app=App(0,None,b'Pixel Revival',1,b'Pixel Revival',1,1<<22)
         info=Info(1,None,0,C.pointer(app),0,None,0,None)
         code=vk.vkCreateInstance(C.byref(info),None,C.byref(instance))
         if code:raise RuntimeError(f'Vulkan device discovery failed ({code})')

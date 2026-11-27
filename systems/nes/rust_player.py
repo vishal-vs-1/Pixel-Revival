@@ -750,7 +750,7 @@ class RustNesPlayer:
         self.window.after(50, self._tick)
         if not self._embedded:
             self.window.focus_set()
-        self.status.set("Game running in JAR Revival (Rust core)" +
+        self.status.set("Game running in Pixel Revival (Rust core)" +
                         ("" if not self._audio.muted else " · muted"))
 
     def poll(self):
@@ -1104,7 +1104,7 @@ class RustNesPlayer:
             except self._tk.TclError:
                 pass
         self.status.set("Game paused" if self._paused else
-                        "Game running in JAR Revival (Rust core)")
+                        "Game running in Pixel Revival (Rust core)")
 
     # -- close ---------------------------------------------------------------
     def terminate(self):

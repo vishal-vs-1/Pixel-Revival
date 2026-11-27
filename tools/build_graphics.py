@@ -108,7 +108,7 @@ def build(args: argparse.Namespace) -> Path:
     shutil.copy2(ROOT / "native-graphics" / "README.md", common / "BUILDING.md")
     shutil.copy2(ROOT / "LICENSE", runtime_root / "LICENSE")
     (runtime_root / "README.txt").write_text(
-        "JAR Revival shared graphics runtime (Windows x64)\n\n"
+        "Pixel Revival shared graphics runtime (Windows x64)\n\n"
         "The common folder contains one shared renderer DLL and its Java JNI shim.\n"
         "The jme and nes folders contain portable manifests that point to that same DLL.\n"
         "This package does not include an emulator, game, ROM, save, or game artwork.\n"

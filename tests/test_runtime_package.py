@@ -103,7 +103,7 @@ def test_windows_packager_stages_only_verified_shared_graphics_runtime(tmp_path,
     expected_root.parent.mkdir(parents=True)
     shutil.copytree(source, expected_root)
     (expected_root / "common" / "BUILDING.md").write_text("build notes", encoding="utf-8")
-    contents = tmp_path / "dist" / "JAR Revival" / "app"
+    contents = tmp_path / "dist" / "Pixel Revival" / "app"
     monkeypatch.setattr(package_windows, "ROOT", tmp_path)
     monkeypatch.setattr(package_windows, "CONTENTS", contents)
 
@@ -120,14 +120,12 @@ def test_windows_packager_stages_only_verified_shared_graphics_runtime(tmp_path,
 
 def test_portable_app_archive_checks_both_shared_renderer_manifests(tmp_path):
     runtime = _tree(tmp_path)
-    readme = (
-        "JAR Revival.exe Import Java ME demo Settings GPUs tab CPU · compatibility "
-        "Artwork tab AI setup Prepare data\\tools\\ai"
-    )
+    readme = (Path(__file__).resolve().parents[1] / 'docs/README-Windows.txt').read_text(
+        encoding='utf-8')
     archive_path = tmp_path / "portable.zip"
-    prefix = "JAR Revival/"
+    prefix = "Pixel Revival/"
     with zipfile.ZipFile(archive_path, "w") as archive:
-        archive.writestr(prefix + "JAR Revival.exe", b"exe")
+        archive.writestr(prefix + "Pixel Revival.exe", b"exe")
         archive.writestr(prefix + "README.txt", readme)
         archive.writestr(prefix + "data/", b"")
         for name in (

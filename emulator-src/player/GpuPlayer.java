@@ -38,7 +38,7 @@ public final class GpuPlayer {
             boolean hidden=Boolean.getBoolean("jme.hidden")||comparison;
             glfwDefaultWindowHints();glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,0);
             glfwWindowHint(GLFW_VISIBLE,hidden?GLFW_FALSE:GLFW_TRUE);glfwWindowHint(GLFW_MAXIMIZED,hidden?GLFW_FALSE:GLFW_TRUE);
-            window=glfwCreateWindow(hidden?640:1000,hidden?640:800,"JAR Revival · GPU player",0,0);
+            window=glfwCreateWindow(hidden?640:1000,hidden?640:800,"Pixel Revival · GPU player",0,0);
             if(window==0)throw new IllegalStateException("An OpenGL 3.0 window could not be created");
             glfwMakeContextCurrent(window);GL.createCapabilities();
             if(!GL.getCapabilities().OpenGL30)throw new IllegalStateException("OpenGL 3.0 framebuffer support is required");

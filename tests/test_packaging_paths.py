@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 home = Path(sys.argv[1]).resolve()
 sys.frozen = True
-sys.executable = str(home / 'JAR Revival.exe')
+sys.executable = str(home / 'Pixel Revival.exe')
 sys._MEIPASS = str(home / 'app')
 from storage import paths as app_paths
 from systems.jme import library as engine

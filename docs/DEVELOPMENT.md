@@ -1,6 +1,6 @@
 # Development
 
-The active architecture is [Project flow](PROJECT_FLOW.md); unresolved behavior is tracked in [Status](STATUS.md). Read repository `AGENTS.md` before modifying code.
+The active architecture is [Architecture and HLD](PROJECT_FLOW.md), with contracts in [Low-level design](LOW_LEVEL_DESIGN.md); unresolved behavior is tracked in [Status](STATUS.md). Read repository `AGENTS.md` before modifying code.
 
 ## Java ME setup
 
@@ -56,6 +56,6 @@ python -m pip install pyinstaller==6.22.3
 python tools/package_windows.py
 ```
 
-The native build requires CMake, Visual Studio 2022 x64 C++ tools/Windows SDK and a JDK with JNI headers (`JAVA_HOME`). Build the Java player and Rust library first. The packager copies the standard `mesen_player.dll`, so ensure it is the intended build rather than relying on a newer `_next.dll`. Output goes to `build/windows-release/`; optional AI setup remains separate.
+The native build requires CMake, Visual Studio 2022 x64 C++ tools/Windows SDK and a JDK with JNI headers (`JAVA_HOME`). Build the Java player and Rust library first. The packager copies the standard `mesen_player.dll`, so ensure it is the intended build rather than relying on a newer `_next.dll`. Output goes to `build/windows-release/Pixel-Revival-Windows-x64-preview.zip`, containing `Pixel Revival/Pixel Revival.exe`; optional AI setup remains separate. Earlier previews retain their original filenames until rebuilt. Preserve the existing portable `data/` directory when upgrading.
 
 Keep generated binaries under `build/` and upstream checkouts under `vendor/`. Preserve games, saves, captures, caches and permanent `local-work/` history. Do not stage or publish without explicit instruction.

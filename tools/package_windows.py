@@ -21,10 +21,10 @@ if __name__ == '__main__':
     sys.path.insert(0, str(ROOT))
 WORK = ROOT / '.runtime' / 'windows-package'
 DIST = WORK / 'dist'
-APP = DIST / 'JAR Revival'
+APP = DIST / 'Pixel Revival'
 CONTENTS = APP / 'app'
 OUTPUT = ROOT / 'build' / 'windows-release'
-ARCHIVE_NAME = 'JAR-Revival-Windows-x64-preview.zip'
+ARCHIVE_NAME = 'Pixel-Revival-Windows-x64-preview.zip'
 
 
 def require(path):
@@ -76,7 +76,7 @@ def make_runtime():
         env['PYTHONPATH'] = str(local_tools) + os.pathsep + env.get('PYTHONPATH', '')
     command = [
         sys.executable, '-m', 'PyInstaller', '--noconfirm', '--onedir',
-        '--windowed', '--contents-directory', 'app', '--name', 'JAR Revival',
+        '--windowed', '--contents-directory', 'app', '--name', 'Pixel Revival',
         '--distpath', str(DIST), '--workpath', str(WORK / 'work'),
         '--specpath', str(WORK), '--runtime-hook', str(hook),
         '--hidden-import', 'tools.setup_ai', str(ROOT / 'app.py'),
@@ -137,7 +137,7 @@ def add_common_graphics_runtime():
         copy(readme, destination / 'README.txt')
     else:
         (destination / 'README.txt').write_text(
-            'JAR Revival common graphics runtime (Windows x64).\n'
+            'Pixel Revival common graphics runtime (Windows x64).\n'
             'JME and NES manifests reference the same verified renderer DLL.\n'
             'See common/BUILDING.md and common/dependencies.json for build details.\n',
             encoding='utf-8')
@@ -162,25 +162,25 @@ def verify_archive(archive):
             raise RuntimeError('ZIP integrity check failed.')
         names = set(zf.namelist())
         required = {
-            'JAR Revival/JAR Revival.exe', 'JAR Revival/README.txt',
-            f'JAR Revival/app/python{sys.version_info.major}{sys.version_info.minor}.dll',
-            'JAR Revival/app/build/jme-player.jar',
-            'JAR Revival/app/fixtures/RevivalDemo.jar',
-            'JAR Revival/app/tools/runtime/bin/java.exe',
-            'JAR Revival/app/tools/gpu/lwjgl-3.3.6.jar',
-            'JAR Revival/app/tools/common-runtime/common/revival_graphics.dll',
-            'JAR Revival/app/tools/common-runtime/common/revival_graphics_jni.dll',
-            'JAR Revival/app/tools/common-runtime/jme/graphics-runtime.json',
-            'JAR Revival/app/tools/common-runtime/nes/graphics-runtime.json',
-            'JAR Revival/app/tools/common-runtime/source/native-graphics-source.zip',
-            'JAR Revival/app/build/rust-nes-target/release/mesen_player.dll',
-            'JAR Revival/app/LICENSE',
-            'JAR Revival/app/THIRD-PARTY-LICENSES/Python-LICENSE.txt',
+            'Pixel Revival/Pixel Revival.exe', 'Pixel Revival/README.txt',
+            f'Pixel Revival/app/python{sys.version_info.major}{sys.version_info.minor}.dll',
+            'Pixel Revival/app/build/jme-player.jar',
+            'Pixel Revival/app/fixtures/RevivalDemo.jar',
+            'Pixel Revival/app/tools/runtime/bin/java.exe',
+            'Pixel Revival/app/tools/gpu/lwjgl-3.3.6.jar',
+            'Pixel Revival/app/tools/common-runtime/common/revival_graphics.dll',
+            'Pixel Revival/app/tools/common-runtime/common/revival_graphics_jni.dll',
+            'Pixel Revival/app/tools/common-runtime/jme/graphics-runtime.json',
+            'Pixel Revival/app/tools/common-runtime/nes/graphics-runtime.json',
+            'Pixel Revival/app/tools/common-runtime/source/native-graphics-source.zip',
+            'Pixel Revival/app/build/rust-nes-target/release/mesen_player.dll',
+            'Pixel Revival/app/LICENSE',
+            'Pixel Revival/app/THIRD-PARTY-LICENSES/Python-LICENSE.txt',
         }
         missing = required - names
         if missing:
             raise RuntimeError('Missing package files: ' + ', '.join(sorted(missing)))
-        runtime_prefix = 'JAR Revival/app/tools/common-runtime/'
+        runtime_prefix = 'Pixel Revival/app/tools/common-runtime/'
         core = zf.read(runtime_prefix + 'common/revival_graphics.dll')
         shim = zf.read(runtime_prefix + 'common/revival_graphics_jni.dll')
         runtime_hashes = json.loads(zf.read(runtime_prefix + 'common/runtime-hashes.json'))
@@ -196,21 +196,21 @@ def verify_archive(archive):
             if manifest.get('build_id') != core_hash or manifest.get('dll') != '../common/revival_graphics.dll':
                 raise RuntimeError(f'Packaged {system} manifest does not identify the common renderer.')
         top = {name.split('/')[1] for name in names if len(name.split('/')) > 1}
-        if top != {'JAR Revival.exe', 'README.txt', 'app', 'data'}:
+        if top != {'Pixel Revival.exe', 'README.txt', 'app', 'data'}:
             raise RuntimeError(f'Unexpected top-level package files: {top}')
         for name in names:
-            if name.startswith('JAR Revival/data/') and not name.endswith('/'):
+            if name.startswith('Pixel Revival/data/') and not name.endswith('/'):
                 raise RuntimeError('A release must not contain user data.')
             if name.endswith(('.jar', '.jad')) and not (
-                name == 'JAR Revival/app/build/jme-player.jar'
-                or name == 'JAR Revival/app/fixtures/RevivalDemo.jar'
-                or name.startswith('JAR Revival/app/tools/')
+                name == 'Pixel Revival/app/build/jme-player.jar'
+                or name == 'Pixel Revival/app/fixtures/RevivalDemo.jar'
+                or name.startswith('Pixel Revival/app/tools/')
             ):
                 raise RuntimeError(f'Unexpected game archive: {name}')
-        readme = zf.read('JAR Revival/README.txt').decode('utf-8')
-        for instruction in ['JAR Revival.exe', 'Import Java ME demo', 'Settings',
-                            'GPUs tab', 'CPU · compatibility', 'Artwork tab', 'AI setup',
-                            'Prepare', 'data\\tools\\ai']:
+        readme = zf.read('Pixel Revival/README.txt').decode('utf-8')
+        for instruction in ['Pixel Revival.exe', 'Java ME or NES', 'Settings',
+                            'CPU compatibility', 'Artwork > Sync', 'AI setup',
+                            'data/', 'Use image', 'Use regenerated poses']:
             if instruction not in readme:
                 raise RuntimeError(f'Missing user instruction: {instruction}')
 
@@ -220,7 +220,7 @@ def make_archive():
     archive = OUTPUT / ARCHIVE_NAME
     pending = WORK / ARCHIVE_NAME
     with zipfile.ZipFile(pending, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        zf.writestr('JAR Revival/data/', '')
+        zf.writestr('Pixel Revival/data/', '')
         for path in sorted(APP.rglob('*')):
             if path.is_file():
                 zf.write(path, path.relative_to(DIST).as_posix())

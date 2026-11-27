@@ -1,11 +1,12 @@
 # Project documentation
 
-Current source snapshot: **26 November 2026**. Read these pages in order:
+Current source snapshot: **27 November 2026**. Read these pages in order:
 
 | Page | Purpose |
 |---|---|
 | [Current status](STATUS.md) | Implemented features, evidence limits and remaining work |
-| [Project flow](PROJECT_FLOW.md) | Active architecture and mode behavior |
+| [Architecture and HLD](PROJECT_FLOW.md) | Context, components, ownership, runtime flows and design decisions |
+| [Low-level design](LOW_LEVEL_DESIGN.md) | Source contracts, data formats, lifecycle invariants and verification map |
 | [Development](DEVELOPMENT.md) | Build, source ownership, checks and packaging |
 | [Asset contracts](ASSET_DECODING.md) | Discovery, database updates and recovery |
 | [Performance](PERFORMANCE.md) | Timing boundaries and measurement limits |

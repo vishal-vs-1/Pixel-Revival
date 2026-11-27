@@ -156,7 +156,7 @@ def main():
         try:msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
         except OSError:
             notice=tk.Tk();notice.withdraw()
-            messagebox.showinfo('JAR Revival is already open','Use the existing JAR Revival window. Only one library runs at a time to avoid competing conversion jobs.')
+            messagebox.showinfo('Pixel Revival is already open','Use the existing Pixel Revival window. Only one library runs at a time to avoid competing conversion jobs.')
             notice.destroy();return
         root=tk.Tk()
         # The launcher lock remains held throughout recovery and the UI lifetime.

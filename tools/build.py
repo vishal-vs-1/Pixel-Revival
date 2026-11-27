@@ -47,7 +47,7 @@ def main():
                     out.write(path, path.relative_to(base).as_posix())
         out.write(vendor / 'LICENSE', 'META-INF/FREEJ2ME-LICENSE.txt')
     commit = subprocess.check_output(['git', '-C', str(vendor), 'rev-parse', 'HEAD'], text=True).strip()
-    (ROOT / 'build/build-info.json').write_text(json.dumps({'upstream_commit': commit, 'java': locate_java(), 'source': 'FreeJ2ME-Plus + JAR Revival'}, indent=2))
+    (ROOT / 'build/build-info.json').write_text(json.dumps({'upstream_commit': commit, 'java': locate_java(), 'source': 'FreeJ2ME-Plus + Pixel Revival'}, indent=2))
     from make_demo import build_demo
     build_demo(classes)
     from setup_runtime import install

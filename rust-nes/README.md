@@ -1,6 +1,6 @@
 # Rust NES backend
 
-The app loads `mesen_player.dll` directly from Python. The previous managed MesenCE player and its frontend bridge are no longer the active runtime. This gives our integration ownership of windows, input, comparison, audio delivery and artwork hooks. See [the architecture decision](../docs/PROJECT_FLOW.md#why-the-nes-player-changed).
+Pixel Revival loads `mesen_player.dll` directly from Python. The previous managed MesenCE player and its frontend bridge are no longer the active runtime. This gives the application integration ownership of windows, input, comparison, audio delivery and artwork hooks. See [the architecture decision](../docs/PROJECT_FLOW.md#why-the-nes-player-changed).
 
 ## Provenance and boundaries
 
