@@ -2,13 +2,7 @@
 
 A Windows launcher for Java ME and NES games with optional local artwork enhancement.
 
-Java ME uses patched FreeJ2ME-Plus. NES uses the vendored Rust core through `mesen_player.dll` inside the app. Bring your own `.jar` or `.nes` files; the included Java ME demo is synthetic.
-
-## Why the NES player changed
-
-Pixel Revival replaces the separate managed Mesen player and its bridge with a Rust library called directly by Python. This gives the app ownership of the player window, controls, comparison, audio delivery and artwork hooks through one integration path.
-
-The emulator core is a reused Rust port of Mesen 0.9.9. Project additions include the C API wrapper, in-app player, HD artwork integration and capture/pose extensions. The core remains separate from the launcher in `rust-nes/mesen-core/`; it was not rewritten from scratch for this app. Its source is vendored so builds do not depend on an external checkout. See [architecture and migration details](docs/PROJECT_FLOW.md#why-the-nes-player-changed).
+Bring your own `.jar` or `.nes` files; the included Java ME demo is synthetic.
 
 ## Use the app
 
@@ -31,6 +25,10 @@ Keep portable `data/` when upgrading: it contains games, saves, settings and art
 | Redraw (no outlines) | Offline pixel tracing |
 
 Prepared artwork is cached. Enhancement is not performed on every game frame. AI can change lettering and details; [examples](docs/ARTWORK.md) show saved outputs.
+
+## Emulation backends
+
+Java ME runs on patched FreeJ2ME-Plus. NES runs on a vendored Rust port of Mesen 0.9.9, integrated through `mesen_player.dll`. Pixel Revival provides the launcher, in-app NES player, artwork pipeline and capture/replacement hooks. See the [architecture](docs/PROJECT_FLOW.md) for component boundaries and the [NES backend notes](rust-nes/README.md) for provenance.
 
 ## Run from source
 

@@ -317,3 +317,7 @@ Reviewed saved migration record 423 and native source attribution to explain the
 4. Static review passed 10 current Markdown pages, 98 local links/anchors, eight existing check references and syntax parsing of 11 changed Python files. Whitespace review passed with line-ending notices. Evidence/script/result: local-work/diagnostics/2026-11-27-architecture-branding. Decision: retain local documentation/branding changes; do not claim they resolve gameplay faults.
 
 Java compilation, native build, full packaging, installed-binary replacement, visible UI acceptance, full suite, benchmarks, gameplay and capture were never run in this task. Existing binaries require rebuilding to receive compiled name changes. No compatibility/performance result follows from these documentation and fixture checks, and no changes were staged, committed or published.
+
+## 2026-11-27 - README audience correction
+
+Reviewed the introduction from a first-time reader's perspective after the user rejected its assumed migration history. Replaced the prominent NES-change explanation with a short current-backend paragraph below usage/artwork, retaining attribution and architecture/provenance links. Static link/anchor and prose checks passed; whitespace review passed with existing line-ending notices. No runtime checks, builds or gameplay were run because this is a prose-only edit. Decision: keep migration rationale in architecture documentation and introduce the product through its present behavior.
