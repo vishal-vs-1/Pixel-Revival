@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import logging
 import queue
+import sqlite3
 import threading
 import time
 import uuid
@@ -54,6 +55,7 @@ class AssetService:
         self._coordinator: threading.Thread | None = None
         self._worker: threading.Thread | None = None
         self._active: _Batch | None = None
+        self._completion_retry_at = 0.0
         self._lease_renew_at = 0.0
         self._cursor = 0
         self._closed = False
@@ -295,7 +297,14 @@ class AssetService:
 
     def stats(self, game_id: str) -> dict:
         game = self._game(game_id)
-        counts = game.store.counts(game.recipe.key)
+        counts_unavailable = False
+        try:
+            counts = game.store.counts(game.recipe.key)
+            game.counts_snapshot = dict(counts)
+        except (OSError, RuntimeError, sqlite3.Error):
+            counts_unavailable = True
+            counts = {key: 0 for key in ('sources', 'QUEUED', 'RUNNING', 'DEFERRED', 'READY', 'FAILED')}
+            counts.update(game.counts_snapshot)
         active = self._active
         active_images = sum(work.game is game for work in active.items) if active else 0
         counts.update(game_id=game_id, recipe_key=game.recipe.key,
@@ -311,6 +320,8 @@ class AssetService:
                       background_batch_limit=game.batch_limit,
                       batch_fallbacks=game.batch_fallbacks,
                       resource_reason=game.resource_reason,
+                      completion_error=game.completion_error,
+                      counts_unavailable=counts_unavailable,
                       frame_p95_ms=(game.metric_values or {}).get("frame_p95_ms"),
                       input_queue_p95_ms=(game.metric_values or {}).get("input_queue_p95_ms"))
         return counts
@@ -636,9 +647,15 @@ class AssetService:
 
 
     def _drain_outcomes(self):
+        if time.monotonic() < self._completion_retry_at:
+            return
         changed = set()
         ready = {}
-        while True:
+        retry = []
+        completed = []
+        # Failed commits are returned only after this snapshot has been drained.
+        # Retaining the active slot bounds retries to one dispatched batch.
+        for _ in range(self._outcomes.qsize()):
             try:
                 outcome = self._outcomes.get_nowait()
             except queue.Empty:
@@ -661,22 +678,42 @@ class AssetService:
                 elif outcome.output is not None:
                     # Collect first: one transaction per game instead of one per image,
                     # which previously cost more than the artwork itself.
-                    ready.setdefault(id(game), (game, []))[1].append((work.lease, outcome.output))
-            except Exception:
-                pass
+                    ready.setdefault(id(game), (game, []))[1].append(outcome)
+                    continue
+            except Exception as error:
+                game.completion_error = f'Artwork result could not be saved: {error}'
+                LOG.exception('artwork completion failed for %s', game.workspace.name)
+                retry.append(outcome)
+                changed.add(game.workspace.name)
+                continue
+            completed.append(outcome)
+        for game, outcomes in ready.values():
+            try:
+                entries = [(item.work.lease, item.output) for item in outcomes]
+                if game.store.mark_ready_batch(entries):
+                    game.dirty_at = time.monotonic() + 0.5
+                    game.compat_pending = True
+                # A rejected stale token is terminal; it cannot overwrite its successor.
+                completed.extend(outcomes)
+            except Exception as error:
+                game.completion_error = f'Artwork result could not be saved: {error}'
+                LOG.exception('artwork completion failed for %s', game.workspace.name)
+                retry.extend(outcomes)
+                changed.add(game.workspace.name)
+        failed_games = {id(item.work.game) for item in retry}
+        for outcome in completed:
+            work, game = outcome.work, outcome.work.game
+            if id(game) not in failed_games:
+                game.completion_error = ''
             if game.player_active:
                 game.last_live_job_seconds = outcome.elapsed
             if self._active is not None:
                 remaining = tuple(item for item in self._active.items if item.lease.token != work.lease.token)
                 self._active = _Batch(remaining) if remaining else None
             changed.add(game.workspace.name)
-        for game, entries in ready.values():
-            try:
-                if game.store.mark_ready_batch(entries):
-                    game.dirty_at = time.monotonic() + 0.5
-                    game.compat_pending = True
-            except Exception:
-                pass
+        for outcome in retry:
+            self._outcomes.put_nowait(outcome)
+        self._completion_retry_at = time.monotonic() + 1.0 if retry else 0.0
         for game_id in changed:
             self._notify(game_id)
 
@@ -690,8 +727,6 @@ class AssetService:
 
     def close(self, timeout: float = 1.0):
         with self._lock:
-            if self._closed:
-                return
             self._closed = True
         self._stop.set()
         try:
@@ -701,5 +736,10 @@ class AssetService:
         for thread in (self._coordinator, self._worker):
             if thread is not None and thread is not threading.current_thread():
                 thread.join(max(0.0, timeout))
-        if self._worker is None or not self._worker.is_alive():
-            self._drain_outcomes()
+        if any(thread is not None and thread.is_alive()
+               for thread in (self._coordinator, self._worker)):
+            return False
+        # The closing thread may drain only after the coordinator has released
+        # ownership; otherwise both could mutate the active batch at once.
+        self._drain_outcomes()
+        return self._outcomes.empty()

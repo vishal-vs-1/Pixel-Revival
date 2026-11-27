@@ -17,7 +17,8 @@ class FakeProcess:
 
 @pytest.mark.parametrize("renderer", ["gpu", "cpu"])
 @pytest.mark.parametrize("original", [False, True])
-def test_custom_profile_is_a_single_jvm_argument_before_player_entry(tmp_path, monkeypatch, renderer, original):
+@pytest.mark.parametrize("recording", [False, True])
+def test_custom_profile_is_a_single_jvm_argument_before_player_entry(tmp_path, monkeypatch, renderer, original, recording):
     root = tmp_path / "app"
     (root / "build").mkdir(parents=True)
     (root / "build" / "jme-player.jar").touch()
@@ -48,6 +49,7 @@ def test_custom_profile_is_a_single_jvm_argument_before_player_entry(tmp_path, m
         "id": GAME_ID, "name": "Fixture", "status": "Ready", "renderer": renderer,
         "control_profile_id": "slot-2", "backend": "pixel", "width": 176,
         "height": 220, "render_scale": 4, "startup": {"note": "unchanged startup"},
+        "record_artwork": recording,
     }
     library.prepare_startup = lambda current: tmp_path / "game.jar"
 
@@ -56,8 +58,11 @@ def test_custom_profile_is_a_single_jvm_argument_before_player_entry(tmp_path, m
     args = captured["args"]
     serialized = serialize_bindings(profile)
     prop = "-Djme.controlBindings=" + serialized
-    assert process.__class__ is FakeProcess
+    assert isinstance(process._process, FakeProcess)
+    assert callable(process.request_close)
     assert args.count(prop) == 1
+    assert f'-Djme.captureArtwork={str(recording).lower()}' in args
+    assert '-Djme.launcherControl=true' in args
     entry = "-cp" if renderer == "gpu" else "-jar"
     assert args.index(prop) < args.index(entry)
     assert args.count("-Djme.scale=1" if original else "-Djme.scale=4") == 1

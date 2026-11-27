@@ -10,6 +10,7 @@ from launcher.labels import SYSTEM_LABELS, ARTWORK_BACKENDS
 
 class LauncherOperations:
     def delete_game(self,game=None):
+        if getattr(self, '_closing', False):return
         if self.busy or self.pending_imports:
             self.status.set('Finish the current library operation before deleting a game.')
             return
@@ -60,6 +61,7 @@ class LauncherOperations:
             messagebox.showerror('Demo not built', 'Run python tools/build.py to build the player and demo.')
 
     def import_game(self, path=None):
+        if getattr(self, '_closing', False):return
         if not path:
             presentation = self.library.presentation(self.visible_system_id)
             path = filedialog.askopenfilename(title=presentation.picker_title, filetypes=presentation.filetypes)
@@ -71,6 +73,7 @@ class LauncherOperations:
         self.start_pending()
 
     def start_pending(self):
+        if getattr(self, '_closing', False):return
         if self.busy:return
         if not self.pending_imports or any(p.poll() is None for p,_ in self.players.values()):return
         request=self.pending_imports.popleft()
@@ -91,6 +94,7 @@ class LauncherOperations:
         threading.Thread(target=worker, daemon=True).start()
 
     def install_ai(self):
+        if getattr(self, '_closing', False):return
         if self.busy: return
         self.busy=True
         self.busy_reason = 'installing the AI backend'
@@ -106,6 +110,7 @@ class LauncherOperations:
         threading.Thread(target=worker,daemon=True).start()
 
     def prepare_style(self):
+        if getattr(self, '_closing', False):return
         if self.busy: return
         game=self.game()
         if not game: return
@@ -129,6 +134,7 @@ class LauncherOperations:
         threading.Thread(target=worker,daemon=True).start()
 
     def sync_artwork(self):
+        if getattr(self, '_closing', False):return
         if self.busy or self.pending_imports:
             self.status.set('Finish the current library operation before syncing artwork.')
             return

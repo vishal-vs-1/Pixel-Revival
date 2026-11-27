@@ -24,11 +24,11 @@ public final class ComparisonInput {
     }
 
     public static void start(BiConsumer<String, Boolean> deliver, Runnable close) {
-        if (!enabled()) return;
+        if (!enabled() && !Boolean.getBoolean("jme.launcherControl")) return;
         Thread reader = new Thread(() -> {
             Set<String> held = new HashSet<String>();
             try (BufferedReader lines = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.US_ASCII))) {
-                Files.createFile(Paths.get(READY));
+                if (READY != null) Files.createFile(Paths.get(READY));
                 String line;
                 while ((line = lines.readLine()) != null) {
                     if (line.equals("!CLOSE")) break;

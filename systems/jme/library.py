@@ -32,7 +32,7 @@ MAX_METADATA_BYTES = 65536
 
 class Library(JavaMeArtwork, JavaMePlayback):
     def __init__(self, library=LIBRARY, rendered=RENDERED, workers=2, *, control_profiles=None,
-                 artwork_recipes=None, recover_previous_artwork=False):
+                 artwork_recipes=None, recover_previous_artwork=False, asset_service=None):
         self.library, self.rendered = Path(library), Path(rendered)
         self.library.mkdir(parents=True, exist_ok=True)
         self.rendered.mkdir(parents=True, exist_ok=True)
@@ -44,7 +44,7 @@ class Library(JavaMeArtwork, JavaMePlayback):
         self._registering = set()
         self.control_profiles = control_profiles or ControlProfileStore(
             DATA_ROOT / 'config' / 'control-profiles.json', atomic_json)
-        self.asset_service = AssetService(self._artwork_recipes.backend_for_recipe,
+        self.asset_service = asset_service if asset_service is not None else AssetService(self._artwork_recipes.backend_for_recipe,
                                           save_workers=SAVE_THREADS,
                                           recover_previous_artwork=recover_previous_artwork)
 
@@ -60,29 +60,54 @@ class Library(JavaMeArtwork, JavaMePlayback):
                 # Old builds saved a stale READY/WAITING snapshot here; only the
                 # asset service's live counters may drive the library display.
                 game.pop('asset_work', None)
-                profile=PROFILES.get(game['id'])
-                if profile and 'width' in profile and not game.get('screen_source') and (game['width'],game['height'])==(240,320):
-                    game['previous_screen']=[game['width'],game['height']]
-                    game.update(profile)
-                    self._write_if_current(file,game)
-                if game.get('ui_recipe')!='smooth-text-v1' and (file.parent/'catalogue.json').exists():
-                    self.prepare_ui_assets(file.parent)
-                    game['ui_recipe']='smooth-text-v1'
-                    self._write_if_current(file,game)
-                from systems.jme.resources.inspection import inspect,VERSION as INSPECTION_VERSION
-                inspection_file=file.parent/'graphics-inspection.json'
-                try:inspection_version=json.loads(inspection_file.read_text()).get('inspection_version',0)
-                except (OSError,ValueError):inspection_version=0
-                if inspection_version<INSPECTION_VERSION and (self.library/game['id']/'game.jar').exists():
-                    try:report=inspect(self.library/game['id']/'game.jar',game.get('assets'))
-                    except (OSError,zipfile.BadZipFile) as error:report={'inspection_version':INSPECTION_VERSION,'error':str(error)}
-                    self._write_if_current(inspection_file, report)
-                if (file.parent/'graphics-inspection.json').exists():
-                    game['graphics_inspection']=json.loads((file.parent/'graphics-inspection.json').read_text())
+                inspection = file.parent / 'graphics-inspection.json'
+                if (inspection.is_file() and not inspection.is_symlink()
+                        and inspection.stat().st_size <= 1_048_576):
+                    try:
+                        report = json.loads(inspection.read_text(encoding='utf-8'))
+                        if isinstance(report, dict):
+                            game['graphics_inspection'] = report
+                    except (OSError, ValueError):
+                        pass
                 result.append(game)
             except (ValueError, OSError):
                 pass
         return sorted(result, key=lambda g: g['name'].casefold())
+
+    def _migrate_catalog_entry(self, file, game):
+        """Run legacy asset/inspection upgrades on the recovery worker."""
+        profile=PROFILES.get(game['id'])
+        if profile and 'width' in profile and not game.get('screen_source') and (game['width'],game['height'])==(240,320):
+            game['previous_screen']=[game['width'],game['height']]
+            game.update(profile)
+            game = self._update_metadata_fields(file, {**profile,
+                'previous_screen': game['previous_screen']}, default_screen_only=True)
+        if game.get('ui_recipe')!='smooth-text-v1' and (file.parent/'catalogue.json').exists():
+            self.prepare_ui_assets(file.parent)
+            game['ui_recipe']='smooth-text-v1'
+            game = self._update_metadata_fields(file, {'ui_recipe': game['ui_recipe']})
+        from systems.jme.resources.inspection import inspect,VERSION as INSPECTION_VERSION
+        inspection_file=file.parent/'graphics-inspection.json'
+        try:inspection_version=json.loads(inspection_file.read_text()).get('inspection_version',0)
+        except (OSError,ValueError):inspection_version=0
+        if inspection_version<INSPECTION_VERSION and (self.library/game['id']/'game.jar').exists():
+            try:report=inspect(self.library/game['id']/'game.jar',game.get('assets'))
+            except (OSError,zipfile.BadZipFile) as error:report={'inspection_version':INSPECTION_VERSION,'error':str(error)}
+            self._write_if_current(inspection_file, report)
+        return game
+
+    def _update_metadata_fields(self, file, changes, *, default_screen_only=False):
+        # Background migration must not overwrite controls or preferences saved
+        # after its initial snapshot was read.
+        with self.lock:
+            self._check_not_deleting(file.parent.name)
+            current = self._read_java_metadata(file)
+            if default_screen_only and (current.get('screen_source') or
+                    (current.get('width'), current.get('height')) != (240, 320)):
+                return current
+            current.update(changes)
+            atomic_json(file, current)
+            return current
 
     def _write_if_current(self, file, document) -> bool:
         """Write only while the game is not being deleted (delete holds lock)."""
@@ -98,6 +123,8 @@ class Library(JavaMeArtwork, JavaMePlayback):
                 or file.stat().st_size > MAX_METADATA_BYTES):
             raise ValueError('Java ME metadata is missing or too large.')
         game = json.loads(file.read_text(encoding='utf-8'))
+        if isinstance(game, dict) and type(game.get('record_artwork', True)) is not bool:
+            raise ValueError('Invalid artwork recording choice.')
         if (not isinstance(game, dict) or game.get('system', 'j2me') != 'j2me'
                 or validate_game_id(game.get('id')) != file.parent.name
                 or not isinstance(game.get('name'), str)):
@@ -122,6 +149,13 @@ class Library(JavaMeArtwork, JavaMePlayback):
                             or folder.is_symlink() or folder.is_junction()):
                         continue
                     game = self._read_java_metadata(metadata_path)
+                    # Guard this workspace without holding the library lock
+                    # throughout slow migration or asset registration.
+                    self._registering.add(folder.name)
+                    registering = folder.name
+                game = self._migrate_catalog_entry(metadata_path, game)
+                with self.lock:
+                    game = self._read_java_metadata(metadata_path)
                     recipe_key = game.get('recipe_key')
                     if not recipe_key:
                         continue
@@ -132,22 +166,17 @@ class Library(JavaMeArtwork, JavaMePlayback):
                     ai_recipe = recipe if recipe.algorithm == 'realesrgan-x4plus-anime' else None
                     if should_stop():
                         return
-                    # Indexing a large catalogue can take minutes. Holding the
-                    # library-wide lock here froze Play and comparison launches,
-                    # so only guard this game against deletion while registering.
-                    self._registering.add(folder.name)
-                    registering = folder.name
-                try:
-                    self.asset_service.register_game(
-                        folder, recipe, game=game, ai_recipe=ai_recipe,
-                        queue_missing=False,
-                        recover=(game.get('status') == 'Ready' and
-                                 game.get('asset_decoding', {}).get('version') == DECODING_VERSION))
-                finally:
-                    with self.lock:
-                        self._registering.discard(registering)
+                self.asset_service.register_game(
+                    folder, recipe, game=game, ai_recipe=ai_recipe,
+                    queue_missing=False,
+                    recover=(game.get('status') == 'Ready' and
+                             game.get('asset_decoding', {}).get('version') == DECODING_VERSION))
             except Exception as error:
                 on_error(str(error))
+            finally:
+                if registering is not None:
+                    with self.lock:
+                        self._registering.discard(registering)
 
     def workspace(self, game_id):
         return self.rendered / validate_game_id(game_id)

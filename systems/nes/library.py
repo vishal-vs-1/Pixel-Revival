@@ -23,7 +23,7 @@ from .metadata import load_metadata, new_metadata, validate_metadata
 from .rom import NesRomInspector
 
 MAX_METADATA_BYTES = 65536
-PREFERENCES = ("name", "backend", "render_scale", "aspect", "capture_policy", "palette_profile")
+PREFERENCES = ("name", "backend", "render_scale", "aspect", "capture_policy", "palette_profile", "record_artwork")
 
 
 def _quiet(_message):

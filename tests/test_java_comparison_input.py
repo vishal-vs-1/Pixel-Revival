@@ -9,18 +9,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize('ending', ['', '!CLOSE\n'])
-def test_shared_java_input_releases_on_eof_and_filters_repeat_presses(tmp_path, ending):
+@pytest.mark.parametrize('standalone', [False, True])
+def test_shared_java_input_releases_on_eof_and_filters_repeat_presses(tmp_path, ending, standalone):
     subprocess.run([locate_java('javac'), '--release', '8', '-d', str(tmp_path),
                     str(ROOT / 'emulator-src/input/ComparisonInput.java'),
                     str(ROOT / 'tests/java/ComparisonInputCheck.java')],
                    check=True, capture_output=True, timeout=30)
     result = subprocess.run([locate_java(), '-Djava.awt.headless=true',
-                             f'-Djme.comparisonReady={tmp_path / "ready"}',
+                             ('-Djme.launcherControl=true' if standalone else
+                              f'-Djme.comparisonReady={tmp_path / "ready"}'),
                              '-cp', str(tmp_path), 'ComparisonInputCheck'],
                             input='+ARROW_RIGHT\n+ARROW_RIGHT\n' + ending, text=True,
                             capture_output=True, timeout=10, check=True)
     assert 'comparison input passed' in result.stdout
-    assert (tmp_path / 'ready').is_file()
+    assert (tmp_path / 'ready').is_file() is not standalone
 
 
 def test_cpu_comparison_input_starts_before_game_code_and_upgrades_old_patch():

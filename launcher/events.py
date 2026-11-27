@@ -6,6 +6,7 @@ import threading
 from tkinter import messagebox
 from systems.contracts import GameRef, JAVA_ME, NES
 from systems.ui_events import ApplicationEvent
+from systems.playback_session import PlaybackSession
 from launcher.labels import SYSTEM_LABELS
 
 
@@ -22,8 +23,13 @@ class LauncherEvents:
             self.messages.put(('background_status', f'Artwork cache recovery skipped: {error}'))
         try:
             self.library.recover_assets(report)
+            self.messages.put(('refresh', None))
         except (OSError, ValueError, LookupError) as error:
             report(str(error))
+        finally:
+            completed = getattr(self, '_asset_recovery_done', None)
+            if completed is not None:
+                completed.set()
 
     def poll(self):
         # Drain bursts without spending the entire UI tick on progress messages.
@@ -94,16 +100,18 @@ class LauncherEvents:
         for key, (process, log) in list(self.players.items()):
             result = process.poll()
             if result is not None:
+                session = self.players[key]
                 del self.players[key]
-                ref=self.player_refs.pop(key,None)
+                legacy_ref = getattr(self, 'player_refs', {}).pop(key, None)
+                ref = session.ref if isinstance(session, PlaybackSession) else legacy_ref
                 self._pending_player_states.discard(ref)
                 try:self.library.set_player_state(ref or key,False)
                 except KeyError:pass
                 if (ref and ref.system == self.visible_system_id
                         and (selected := self.game_if_selected()) and selected['id'] == key):
                     self.playable_artwork.refresh(selected)
-                if key in getattr(self, '_recording_players', {}):
-                    self._recording_players.pop(key, None)
+                legacy_recording = getattr(self, '_recording_players', {}).pop(key, False)
+                if (session.recording if isinstance(session, PlaybackSession) else legacy_recording):
                     self._start_pose_import(key)
                 if result:
                     reason = ('The GPU player could not continue. Try CPU · compatibility in the Compatibility tab, or check your graphics driver.'
@@ -114,7 +122,8 @@ class LauncherEvents:
                               if result == 72 and ref is not None and ref.system==JAVA_ME else
                               f'The player exited with code {result}.')
                     messagebox.showerror('Player stopped', f'{reason}\n\nDetails: {log}')
-        self.start_pending()
+        if not getattr(self, '_closing', False):
+            self.start_pending()
         self.row_actions.set_enabled(not self.busy and not self.pending_imports)
         self.root.after(120, self.poll)
 
@@ -164,7 +173,7 @@ class LauncherEvents:
         self.deleting_games.pop(ref.id,None)
         self._asset_stats.pop(ref,None)
         self.players.pop(ref.id,None)
-        self.player_refs.pop(ref.id,None)
+        getattr(self, 'player_refs', {}).pop(ref.id,None)
         if ref.system==self.visible_system_id:
             self._show_catalog()
         self.status.set(f"{event.detail} deleted from the {SYSTEM_LABELS[ref.system]} library. Saved progress kept."+

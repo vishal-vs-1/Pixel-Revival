@@ -291,8 +291,8 @@ def launch_comparison(runtime, game, source, workspace, *, host_parent=None,
                 player = RustNesPlayer(
                     runtime._core, game, rom, target, original=original,
                     controls=controls, embedded_parent=pair.panes[index],
-                    audio_enabled=not original, capture=not original,
-                    capture_workspace=workspace, record_poses=not original,
+                    audio_enabled=not original, capture=not original and game.get('record_artwork', True),
+                    capture_workspace=workspace, record_poses=not original and game.get('record_artwork', True),
                     pose_workspace=workspace,
                     pose_overlay=None if original else options.get('pose_overlay'))
                 # Both panes must render at the same physical size so tiles and

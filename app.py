@@ -4,7 +4,6 @@ import queue
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
 from systems.jme.library import Library, ROOT
@@ -13,7 +12,6 @@ from storage.paths import APP_ROOT, DATA_ROOT, RESOURCE_ROOT
 from graphics.gpu_policy import devices as gpu_devices
 from systems.nes.controls import NesControlProfileStore
 from systems.application import ApplicationLibrary
-from systems.comparison import ComparisonPlayers
 from systems.jme.system import JavaMeSystem
 from systems.nes.library import NesLibrary
 from systems.nes.integration import NesCaptureIntegration
@@ -21,6 +19,8 @@ from systems.nes.playable_assets import PlayableAssets
 from systems.nes.metadata import DEFAULT_RENDER_SCALE
 from systems.app_settings import ApplicationSettingsStore
 from runtime_assets.recipes import ArtworkRecipes
+from runtime_assets.service import AssetService
+from systems.playback_session import PlaybackSession
 from launcher.styles import LauncherStyles
 from launcher.catalog import LauncherCatalog
 from launcher.settings import LauncherSettings
@@ -44,8 +44,9 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
             rust_runtime = None
         self.nes_runtime = rust_runtime
         artwork_recipes = ArtworkRecipes()
-        java_library = Library(artwork_recipes=artwork_recipes,
-                               recover_previous_artwork=recover_previous_artwork)
+        asset_service = AssetService(artwork_recipes.backend_for_recipe, save_workers=7,
+                                     recover_previous_artwork=recover_previous_artwork)
+        java_library = Library(artwork_recipes=artwork_recipes, asset_service=asset_service)
         java = JavaMeSystem(java_library, demo=ROOT / 'fixtures' / 'RevivalDemo.jar')
 
         def register_nes_artwork(folder, game, recovering=False):
@@ -55,18 +56,18 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
                 expected_palette_profile=game.get("palette_profile"),
                 pack_scale=game.get("render_scale", DEFAULT_RENDER_SCALE),
             )
-            return java_library.asset_service.register_game(
+            return asset_service.register_game(
                 folder, recipe, game=game, ai_recipe=ai_recipe,
                 integration=integration, defer_maintenance_during_play=True,
             )
 
         # Keep the JME paths intact and give NES its independently owned storage tree.
-        nes = NesLibrary(DATA_ROOT / 'nes', asset_service=java_library.asset_service,
+        nes = NesLibrary(DATA_ROOT / 'nes', asset_service=asset_service,
                          control_profiles=self.nes_control_profiles, runtime=rust_runtime,
                          register_artwork=register_nes_artwork,
                          playable_assets=PlayableAssets(APP_ROOT))
         self.nes_library = nes
-        self.library = ApplicationLibrary((java, nes), java_library.asset_service)
+        self.library = ApplicationLibrary((java, nes), asset_service)
         self.app_settings = ApplicationSettingsStore(
             DATA_ROOT / 'config' / 'application.json', atomic_json)
         self.visible_system_id = self.app_settings.load_visible_system()
@@ -82,13 +83,12 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
         self.busy = False
         self.busy_reason = ''
         self.deleting_games = {}
-        self.player_refs = {}
-        self._recording_players = {}
         self._pending_player_states = set()
+        self._asset_recovery_done = threading.Event()
         self._delete_workers = ThreadPoolExecutor(max_workers=2,thread_name_prefix='delete-game')
         self.pending_imports = deque()
         self.preparation_paused = False
-        self.players: dict[str, tuple[object, Path]] = {}
+        self.players: dict[str, PlaybackSession] = {}
         self.settings_dialog = None
         self.control_profile_choice_ids = {}
         self.control_profile_problem = None
@@ -105,24 +105,34 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
         threading.Thread(target=self.bootstrap_asset_service,daemon=True).start()
 
     def close(self):
-        comparisons = [process.view for process, _log in self.players.values()
-                       if isinstance(process, ComparisonPlayers) and hasattr(process, 'view')
-                       and process.poll() is None]
-        if comparisons:
-            for view in comparisons:
-                view.close()
+        if getattr(self, '_close_finished', False):
+            return
+        self._closing = True
+        pending = False
+        for key, value in list(self.players.items()):
+            if not isinstance(value, PlaybackSession):
+                process, log = value
+                value = PlaybackSession(getattr(self, 'player_refs', {}).get(key), process, log)
+                self.players[key] = value
+            try:
+                pending = not value.request_close() or pending
+            except (OSError, RuntimeError, ValueError) as error:
+                self._closing = False
+                messagebox.showerror('Player is still open', str(error))
+                return
+        if pending:
             self.root.after(100, self.close)
             return
-        for process, _log in list(self.players.values()):
-            view = getattr(process, 'view', None)
-            if view is None:
-                continue
-            close = getattr(view, 'shutdown', None) or getattr(view, 'close', None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    pass
+        stop_recovery = getattr(self.library, 'stop_recovery', None)
+        if callable(stop_recovery):
+            stop_recovery()
+        recovery = getattr(self, '_asset_recovery_done', None)
+        if (any(value.recording for value in self.players.values()) or
+                getattr(self, '_recording_players', ()) or
+                getattr(self, '_pose_importing', ()) or getattr(self, 'deleting_games', ()) or
+                (recovery is not None and not recovery.is_set()) or getattr(self, 'busy', False)):
+            self.root.after(100, self.close)
+            return
         shutdown_nes = getattr(self.nes_runtime, 'shutdown', None)
         if callable(shutdown_nes):
             try:
@@ -133,7 +143,11 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
                 return
         self._delete_workers.shutdown(wait=False)
         self._preview_worker.shutdown(wait=False, cancel_futures=True)
-        self.library.close(timeout=1.0)
+        if self.library.close(timeout=0.05) is False:
+            self.status.set('Finishing artwork work and saving results before exit.')
+            self.root.after(100, self.close)
+            return
+        self._close_finished = True
         self.root.destroy()
 
     def detect_gpus(self):
@@ -145,6 +159,11 @@ class App(LauncherStyles, LauncherCatalog, LauncherSettings, LauncherOperations,
 
 
 def main():
+    import sys
+    if '--check-runtime' in sys.argv:
+        from tools.runtime_check import check_runtime
+        check_runtime(RESOURCE_ROOT)
+        return
     # A second launcher could otherwise keep converting on the same GPU during play.
     import msvcrt
     lock_path=DATA_ROOT/'library/.launcher.lock'

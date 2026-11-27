@@ -13,6 +13,9 @@ jobs:
   python-contracts:
     name: Python contract suite
     runs-on: windows-latest
+    strategy:
+      matrix:
+        python: ['3.12', '3.14']
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -20,7 +23,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.14'
+          python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
@@ -61,7 +64,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install native-job test dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install -r requirements-dev.txt pyinstaller==6.22.3
 
       - name: Build and validate shared graphics package
         shell: pwsh
@@ -78,4 +81,20 @@ jobs:
         run: |
           $env:CARGO_TARGET_DIR = "build/rust-nes-target"
           cargo test --release --manifest-path rust-nes/Cargo.toml -p mesen-player
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --release --manifest-path rust-nes/Cargo.toml -p mesen-core pose::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pytest -q tests/test_nes_rust.py tests/test_runtime_package.py
+
+      - name: Compile Java player and prepare portable dependencies
+        run: python tools/build.py
+
+      - name: Build and check the default portable app
+        shell: pwsh
+        run: |
+          python tools/package_windows.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $package = 'build/windows-release/Pixel-Revival-Windows-x64-preview.zip'
+          Expand-Archive -LiteralPath $package -DestinationPath build/package-smoke -Force
+          $process = Start-Process -FilePath 'build/package-smoke/Pixel Revival/Pixel Revival.exe' -ArgumentList '--check-runtime' -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Packaged runtime dependency check failed.' }

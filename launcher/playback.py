@@ -7,6 +7,7 @@ from pathlib import Path
 from tkinter import messagebox
 from systems.comparison import ComparisonPlayers
 from systems.contracts import GameRef, NES
+from systems.playback_session import PlaybackSession
 from .comparison import ComparisonWindow
 
 
@@ -27,6 +28,35 @@ class LauncherPlayback:
             self.poses_play.set(False)
         elif selected == 'poses' and self.poses_play.get():
             self.image_play.set(False)
+        self._refresh_readiness()
+
+    def set_record_artwork(self):
+        game = self.game_if_selected()
+        if game is None:
+            return
+        previous = game.get('record_artwork', True)
+        running = self.players.get(game['id'])
+        if self.busy or (running and running[0].poll() is None):
+            self.record_artwork.set(previous)
+            self.status.set('Close this game before changing recording.')
+            return
+        updated = {**game, 'record_artwork': bool(self.record_artwork.get())}
+        try:
+            self.library.save(updated)
+        except (OSError, ValueError, RuntimeError) as error:
+            self.record_artwork.set(previous)
+            self.status.set(f'Could not save recording choice: {error}')
+            return
+        game.update(updated)
+        self._refresh_readiness()
+
+    def _refresh_readiness(self):
+        if not hasattr(self, 'readiness'):
+            return
+        from .readiness import describe_readiness
+        game = self.game_if_selected()
+        self.readiness.set(describe_readiness(game,
+            image=self.image_play.get(), poses=self.poses_play.get()) if game else 'Select a game to play.')
 
     def set_sprite_playback_options(self, image_available, poses_available, *, enabled=True):
         for variable, checkbox, available in (
@@ -45,7 +75,10 @@ class LauncherPlayback:
         if GameRef.from_metadata(game).system == NES:
             return {'player_replacement': image and not poses,
                     'player_regenerated': poses}
-        return {'pose_mode': 'regenerated' if poses else 'record-replace' if image else 'record'}
+        recording = game.get('record_artwork', True)
+        return {'pose_mode': ('regenerated' if poses else
+                             ('record-replace' if recording else 'replace') if image else
+                             'record' if recording else None)}
 
     def _blocked_message(self):
         reason = getattr(self, 'busy_reason', '')
@@ -65,6 +98,8 @@ class LauncherPlayback:
 
     def start_comparison(self, game):
         """Launch both players; the Rust pair starts inline on the window thread."""
+        if getattr(self, '_closing', False):
+            return
         ref = GameRef.from_metadata(game)
         if ref.system == NES and ref.id in getattr(self, '_pose_importing', ()):
             self.status.set('Wait for the recorded player poses to finish importing.')
@@ -111,10 +146,8 @@ class LauncherPlayback:
     def comparison_started(self, value):
         game, process, log = value
         ref = GameRef.from_metadata(game)
-        self.players[ref.id] = (process, log)
-        self.player_refs[ref.id] = ref
-        if ref.system == NES:
-            self._recording_players[ref.id] = True
+        self.players[ref.id] = PlaybackSession(ref, process, log,
+            recording=(ref.system == NES and game.get('record_artwork', True)))
         if getattr(process, 'owns_window', False):
             # The Rust pair already owns one Tk window with both panes.
             process.view = process
@@ -143,7 +176,7 @@ class LauncherPlayback:
         game, error = value
         ref = GameRef.from_metadata(game)
         self.players.pop(ref.id, None)
-        self.player_refs.pop(ref.id, None)
+        getattr(self, 'player_refs', {}).pop(ref.id, None)
         getattr(self, '_recording_players', {}).pop(ref.id, None)
         self._finish_comparison_launch()
         try:
@@ -155,6 +188,8 @@ class LauncherPlayback:
         messagebox.showerror('Could not start comparison', str(error))
 
     def play(self, original=None, game=None):
+        if getattr(self, '_closing', False):
+            return
         if self.busy:
             self.status.set(self._blocked_message())
             return
@@ -172,16 +207,18 @@ class LauncherPlayback:
             if game.get('runtime_status')=='unsupported':
                 self.status.set('This NES cartridge is reported as unsupported by the Rust player.')
                 return
-            capture=True
+            capture=game.get('record_artwork', True)
             if not original and not self.library.enhanced_available(NES):
                 original = True
         self.launch_game(game, original, capture=capture,
-                         capture_poses=(ref.system == NES),
+                         capture_poses=(ref.system == NES and game.get('record_artwork', True)),
                          **self._sprite_playback_options(game))
 
     def launch_game(self,game,original=False,*,capture=False,pose_mode=None,comparison=False,
                     player_replacement=False,player_recording=False,player_regenerated=False,
                     capture_poses=False):
+        if getattr(self, '_closing', False):
+            return
         ref=GameRef.from_metadata(game)
         if ref.system == NES and ref.id in getattr(self, '_pose_importing', ()):
             self.status.set('Wait for the recorded player poses to finish importing.')
@@ -210,10 +247,8 @@ class LauncherPlayback:
             else:
                 options = {'pose_mode': pose_mode} if pose_mode else {}
                 process,log=self.library.launch(game, original, **options)
-            self.players[ref.id] = (process,log)
-            if ref.system == NES and (player_recording or capture_poses or comparison):
-                self._recording_players[ref.id] = True
-            self.player_refs[ref.id]=ref
+            self.players[ref.id] = PlaybackSession(ref, process, log,
+                recording=(ref.system == NES and (player_recording or capture_poses or comparison)))
             self._notify_player_started(ref,log)
             if comparison:
                 if getattr(process, 'owns_window', False):
@@ -231,7 +266,7 @@ class LauncherPlayback:
                     raise
                 self.status.set('Comparison opened with shared keyboard controls.')
                 return
-            if ref.system == NES and type(process).__name__ == "RustNesPlayer":
+            if ref.system == NES and getattr(process, 'owns_window', False) is True:
                 process.view = process
             hint=' '+game.get('startup_hint','')
             if ref.system==NES:
@@ -254,7 +289,7 @@ class LauncherPlayback:
             # Close and forget it so Play does not stay stuck on
             # "Already running" with a leaked player process.
             active = self.players.pop(ref.id, None)
-            self.player_refs.pop(ref.id, None)
+            getattr(self, 'player_refs', {}).pop(ref.id, None)
             getattr(self, '_recording_players', {}).pop(ref.id, None)
             if active is not None:
                 process = active[0]

@@ -41,6 +41,8 @@ class _Game:
     batch_fallbacks: int = 0
     batch_limit: int = 16
     resource_reason: str = ''
+    completion_error: str = ''
+    counts_snapshot: dict = field(default_factory=dict)
     removing: bool = False
     ready_sample_cursor: int = 0
     defer_maintenance_during_play: bool = False

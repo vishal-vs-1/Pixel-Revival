@@ -12,6 +12,7 @@ from systems.jme.execution_policy import java_execution_arguments
 from storage.paths import RESOURCE_ROOT
 from systems.jme.pose_artwork import PoseArtwork
 from controls.java_me import CUSTOM_SLOT_IDS, resolve_selection, serialize_bindings
+from systems.playback_session import JavaProcess
 from systems.jme.jdk import locate_java
 
 ROOT = RESOURCE_ROOT
@@ -58,7 +59,8 @@ class JavaMePlayback:
                     saves.mkdir(parents=True)
                     copy_playback_files(folder / 'saves', saves)
                 pair = ComparisonPlayers(lambda original: self._launch(
-                    dict(game), original, pose_mode=None if original else (pose_mode or 'record'),
+                    dict(game), original, pose_mode=None if original else
+                    (pose_mode or ('record' if game.get('record_artwork', True) else None)),
                     comparison_saves=root / ('original' if original else 'enhanced')),
                     ready_paths=(root / 'original.ready', root / 'enhanced.ready'))
                 self._players[game['id']] = pair
@@ -86,20 +88,21 @@ class JavaMePlayback:
         control_profile_arg=(f'-Djme.controlBindings={serialize_bindings(control_resolution.profile)}'
                              if control_resolution.profile is not None else None)
         args = [java, *java_execution_arguments(game), '-Xmx768m', '-Dfile.encoding=ISO_8859_1', f'-Djme.pack={folder}',
+                '-Djme.launcherControl=true',
                 f'-Djme.stats={log_path.with_suffix(".stats.json")}',
                 f"-Djme.textures={self.texture_dir(folder,game.get('backend','pixel'))}",
                 f'-Djme.scale={1 if original else render_scale}',
-                f'-Djme.captureArtwork={str(comparison_saves is None or not original).lower()}']
+                f'-Djme.captureArtwork={str(game.get("record_artwork", True) and (comparison_saves is None or not original)).lower()}']
         args += [f'-Djme.gpuPreference={gpu_mode}',f'-Djme.expectedGpu={expected["name"] if expected else ""}']
         args += runtime_arguments(game['id'],game)
         if pose_mode in ('record', 'record-replace', 'replace'):
             args.extend(PoseArtwork(folder).launch_arguments(pose_mode != 'replace'))
             args.append(f'-Djme.replacePoses={str(pose_mode != "record").lower()}')
         elif pose_mode == 'regenerated':
-            args.extend(PoseArtwork(folder).launch_arguments(True, regenerated=True))
+            args.extend(PoseArtwork(folder).launch_arguments(game.get('record_artwork', True), regenerated=True))
         if control_profile_arg is not None:
             args.append(control_profile_arg)
-        launch_options = {}
+        launch_options = {"stdin": subprocess.PIPE}
         if comparison_saves is not None:
             ready = comparison_saves.with_suffix('.ready')
             args.append(f'-Djme.comparisonReady={ready}')
@@ -129,8 +132,8 @@ class JavaMePlayback:
                 requested=selection if selection in CUSTOM_SLOT_IDS else 'invalid'
                 log.write('Control profile fallback: '+requested+' -> default ('+control_resolution.reason+')\n')
             log.flush()
-            process = subprocess.Popen(args, cwd=working_directory,
-                                       stdout=log, stderr=subprocess.STDOUT, **launch_options)
+            process = JavaProcess(subprocess.Popen(args, cwd=working_directory,
+                                       stdout=log, stderr=subprocess.STDOUT, **launch_options))
         if comparison_saves is None:
             self._players[game['id']]=process
         return process, log_path

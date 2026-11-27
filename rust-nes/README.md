@@ -22,7 +22,7 @@ From the project root:
 cargo build --release --manifest-path rust-nes/Cargo.toml -p mesen-player --target-dir build/rust-nes-target
 ```
 
-Output: `build/rust-nes-target/release/mesen_player.dll`. Python chooses the newest standard or `_next` DLL there, unless `RUST_NES_DLL` selects an explicit build. Restart a running launcher to load a rebuilt library.
+Output: `build/rust-nes-target/release/mesen_player.dll`. Python loads the standard DLL there. Experimental `_next` builds require explicit `RUST_NES_DLL` selection; timestamps do not change the active runtime. Player logs include its path, SHA-256 and ABI. Restart a running launcher to load a rebuilt library.
 
 ## Optional sprite observation
 

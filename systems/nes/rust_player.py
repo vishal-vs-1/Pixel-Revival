@@ -178,6 +178,8 @@ class RustNesRuntime:
 class RustNesPlayer:
     """Tk window + worker threads driving one Rust core instance."""
 
+    owns_window = True
+
     def __init__(self, core, game, source: Path, workspace: Path, *, original=True,
                  controls=None, host_parent=None, embedded_parent=None,
                  record_poses=False, pose_overlay=None, audio_enabled=True,
@@ -274,6 +276,9 @@ class RustNesPlayer:
 
         rom = self._source.read_bytes()
         self._write_log(f"ROM: {self._source} ({len(rom)} bytes)")
+        identity = getattr(core, 'identity', None)
+        if isinstance(identity, dict):
+            self._write_log(f"Native runtime: {identity}")
         self._handle = core.create(rom)
         region = core.region(self._handle)
         self._dt = _FRAME_DT_PAL if region != 0 else _FRAME_DT_NTSC

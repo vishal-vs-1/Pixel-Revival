@@ -10,6 +10,7 @@ native message attached.
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import os
 from pathlib import Path
 
@@ -37,17 +38,9 @@ def find_dll(app_root: Path | None = None) -> Path | None:
         return None
     root = Path(app_root) if app_root is not None else Path(__file__).resolve().parents[2]
     release = root / "build" / "rust-nes-target" / "release"
-    # A freshly built DLL can be placed beside a locked one. Pick the newest
-    # so an old mesen_player_next.dll cannot shadow a newer standard build.
-    candidates = [release / name for name in
-                  ("mesen_player_next.dll", "mesen_player.dll")]
-    present = [path for path in candidates if path.is_file()]
-    if not present:
-        return None
-    try:
-        return max(present, key=lambda path: path.stat().st_mtime_ns)
-    except OSError:
-        return present[0]
+    # Experiment builds require RUST_NES_DLL, regardless of file timestamps.
+    standard = release / 'mesen_player.dll'
+    return standard if standard.is_file() else None
 
 
 class RustCoreError(RuntimeError):
@@ -70,6 +63,8 @@ class RustCore:
         lib.rs_abi_version.restype = ctypes.c_uint
         if int(lib.rs_abi_version()) != ABI_VERSION:
             raise RustCoreError("Rust NES player ABI is not version 1")
+        self.identity = {'path': str(path.resolve()), 'abi': ABI_VERSION,
+                         'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
         lib.rs_is_alive.argtypes = [ctypes.c_void_p]
         lib.rs_is_alive.restype = ctypes.c_int
         lib.rs_create.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint,

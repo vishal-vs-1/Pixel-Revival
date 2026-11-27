@@ -99,7 +99,7 @@ def test_runtime_archive_rejects_mismatched_consumer_manifest(tmp_path):
 def test_windows_packager_stages_only_verified_shared_graphics_runtime(tmp_path, monkeypatch):
     source = _tree(tmp_path)
     (tmp_path / "LICENSE").write_text("license", encoding="utf-8")
-    expected_root = tmp_path / "build" / "common-runtime-u23-resize"
+    expected_root = tmp_path / "build" / "common-runtime"
     expected_root.parent.mkdir(parents=True)
     shutil.copytree(source, expected_root)
     (expected_root / "common" / "BUILDING.md").write_text("build notes", encoding="utf-8")
@@ -118,7 +118,8 @@ def test_windows_packager_stages_only_verified_shared_graphics_runtime(tmp_path,
     assert (staged / "source" / "native-graphics-source.zip").is_file()
 
 
-def test_portable_app_archive_checks_both_shared_renderer_manifests(tmp_path):
+@pytest.mark.parametrize('common', ['absent', 'valid', 'incomplete'])
+def test_portable_app_archive_checks_both_shared_renderer_manifests(tmp_path, common):
     runtime = _tree(tmp_path)
     readme = (Path(__file__).resolve().parents[1] / 'docs/README-Windows.txt').read_text(
         encoding='utf-8')
@@ -136,8 +137,15 @@ def test_portable_app_archive_checks_both_shared_renderer_manifests(tmp_path):
             "app/LICENSE", "app/THIRD-PARTY-LICENSES/Python-LICENSE.txt",
         ):
             archive.writestr(prefix + name, b"fixture")
-        for path in sorted(runtime.rglob("*")):
-            if path.is_file():
-                archive.write(path, prefix + "app/tools/common-runtime/" + path.relative_to(runtime).as_posix())
+        if common == 'incomplete':
+            archive.writestr(prefix + 'app/tools/common-runtime/common/revival_graphics.dll', b'fixture')
+        elif common == 'valid':
+            for path in sorted(runtime.rglob("*")):
+                if path.is_file():
+                    archive.write(path, prefix + "app/tools/common-runtime/" + path.relative_to(runtime).as_posix())
 
-    package_windows.verify_archive(archive_path)
+    if common == 'incomplete':
+        with pytest.raises(RuntimeError, match='Incomplete optional'):
+            package_windows.verify_archive(archive_path)
+    else:
+        package_windows.verify_archive(archive_path)

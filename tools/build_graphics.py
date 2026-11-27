@@ -15,7 +15,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 DEFAULT_BUILD = ROOT / "build" / "native-graphics-u22"
-DEFAULT_RUNTIME = ROOT / "build" / "common-runtime-u22"
+DEFAULT_RUNTIME = ROOT / "build" / "common-runtime"
 
 
 def _cmake(explicit: str | None = None) -> str:

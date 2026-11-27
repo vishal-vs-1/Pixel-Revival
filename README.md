@@ -12,7 +12,7 @@ Bring your own `.jar` or `.nes` files; the included Java ME demo is synthetic.
 4. **Compare side by side** opens Original and Enhanced with shared keys. Only Enhanced captures artwork and applies character replacements in comparison.
 5. Use **Settings** for keyboard profiles, **Artwork** to prepare images, and **Sync** to reconcile missed captures while players are closed.
 
-Normal standalone Original and Enhanced capture artwork and pose candidates. Java ME player poses require review and confirmation. NES identification is experimental and can miss the player or select enemies. See [current status](docs/STATUS.md).
+Normal standalone Original and Enhanced capture artwork and pose candidates. The per-game **Record artwork and pose candidates** control can disable new recording for later launches while keeping prepared artwork and selected replacements available. Java ME player poses require review and confirmation. NES identification is experimental and can miss the player or select enemies. See [current status](docs/STATUS.md).
 
 Keep portable `data/` when upgrading: it contains games, saves, settings and artwork. An existing preview ZIP may predate the current source behavior; see its bundled guide.
 

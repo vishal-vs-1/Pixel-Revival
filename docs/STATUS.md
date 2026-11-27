@@ -17,11 +17,14 @@ Documentation and naming update, **27 November 2026**: the [HLD](PROJECT_FLOW.md
 
 ## Open work
 
+Review repairs, **27 November 2026**: application-owned playback sessions and shared artwork service, cooperative standalone Java close, completion-write retry/error reporting, explicit experimental DLL selection, background catalog migrations, per-game recording controls and a readiness summary are implemented. Default packaging no longer requires the historical shared renderer; it remains an explicit optional payload with verification. CI now includes minimum Python, focused core tests, Java compilation and packaged dependency checks. Local focused checks and a dependency-only runtime check passed; full clean-runner packaging and visible gameplay acceptance are still separate.
+
 1. **NES initial identity:** Snow Brothers can select enemies. Kung Fu and Jackie Chan still produced no accepted poses in attempted sequences. Fix generic detection without game-title branches.
 2. **Coverage:** resolve other zero-result/menu/paused cases. All 131 ROMs were attempted, but 65 nonzero candidate sets are not 65 working games. Three controller types were rejected. No valid all-games success percentage is available.
 3. **Gameplay acceptance:** check running/jumping image coverage, unchanged enemies, smoothness and normal close/import after restart. Native framebuffer equivalence and focused checks do not settle these.
 4. **Java ME acceptance:** verify comparison sizing, resumed batches and captured/confirmed pose behavior through the normal launcher.
-5. **Build/package consistency:** shared graphics staging remains in build/package tooling even though active Java ME and NES no longer share that renderer. Audit dependencies before removing them; rebuild a preview before claiming it contains current fixes.
+5. **Build/package acceptance:** validate the updated CI workflow and a full clean portable build before claiming an older preview contains these changes. Default and optional graphics payloads pass fixture verification; the local dependency smoke check opens no game or window.
+6. **Deferred hook work:** player/enemy confirmation, semantic scene coverage, decoder experiments and native occlusion changes were deliberately left unchanged at the user's request. Recording cost and live UI/gameplay still need measured acceptance; the new control does not establish zero overhead.
 
 ## Evidence boundary
 

@@ -20,7 +20,10 @@ NES player identification is experimental: it can miss poses or select enemies.
 Regenerate again when the saved pose set changes.
 
 CAPTURE AND COMPARISON
-Standalone Original and Enhanced capture artwork and pose candidates.
+Standalone Original and Enhanced capture artwork and pose candidates by default.
+Record artwork and pose candidates is a saved per-game control for later launches.
+Turn it off while players are closed to play without collecting new artwork.
+The Play readiness summary separates runtime, artwork and recording state.
 Comparison uses shared keys and private save copies. Only Enhanced captures
 and applies the selected character artwork in comparison.
 F11 toggles comparison fullscreen. Java ME Escape leaves fullscreen before

@@ -40,6 +40,8 @@ def new_metadata(info: NesRomInfo, filename: str, backend: str,
 
 
 def validate_metadata(game: dict, expected_id: str | None = None) -> dict:
+    if isinstance(game, dict) and type(game.get('record_artwork', True)) is not bool:
+        raise ValueError('Invalid artwork recording choice.')
     if (not isinstance(game, dict) or type(game.get("schema")) is not int
             or game.get("schema") != SCHEMA or game.get("system") != NES):
         raise ValueError("Unsupported NES game metadata.")

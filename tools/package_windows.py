@@ -5,6 +5,7 @@ Run on Windows: python tools/package_windows.py
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -84,11 +85,12 @@ def make_runtime():
     subprocess.run(command, cwd=ROOT, env=env, check=True)
 
 
-def add_assets():
+def add_assets(*, include_common_graphics=False):
     copy(ROOT / 'build/jme-player.jar', CONTENTS / 'build/jme-player.jar')
     copy(ROOT / 'tools/runtime', CONTENTS / 'tools/runtime')
     copy(ROOT / 'tools/gpu', CONTENTS / 'tools/gpu')
-    add_common_graphics_runtime()
+    if include_common_graphics:
+        add_common_graphics_runtime()
     add_rust_nes_player()
     copy(ROOT / 'fixtures/RevivalDemo.jar', CONTENTS / 'fixtures/RevivalDemo.jar')
     copy(ROOT / 'compatibility-src', CONTENTS / 'compatibility-src')
@@ -117,9 +119,9 @@ def add_common_graphics_runtime():
     from graphics.jme_runtime import JmeGraphicsRuntimeLocator
     from graphics.runtime_package import validate_runtime_tree
 
-    preferred = ROOT / 'build' / 'common-runtime-u23-resize' / 'jme' / 'graphics-runtime.json'
+    preferred = ROOT / 'build' / 'common-runtime' / 'jme' / 'graphics-runtime.json'
     locator = JmeGraphicsRuntimeLocator(
-        ROOT, packaged=False, environment={}, preferred_manifest=preferred)
+        ROOT, packaged=False, environment={'J2ME_REVIVAL_GRAPHICS_RUNTIME_ROOT': str(preferred.parent.parent.resolve())})
     runtime = locator.locate()
     if runtime is None:
         raise RuntimeError('A verified shared graphics runtime is required for the portable app.')
@@ -168,11 +170,6 @@ def verify_archive(archive):
             'Pixel Revival/app/fixtures/RevivalDemo.jar',
             'Pixel Revival/app/tools/runtime/bin/java.exe',
             'Pixel Revival/app/tools/gpu/lwjgl-3.3.6.jar',
-            'Pixel Revival/app/tools/common-runtime/common/revival_graphics.dll',
-            'Pixel Revival/app/tools/common-runtime/common/revival_graphics_jni.dll',
-            'Pixel Revival/app/tools/common-runtime/jme/graphics-runtime.json',
-            'Pixel Revival/app/tools/common-runtime/nes/graphics-runtime.json',
-            'Pixel Revival/app/tools/common-runtime/source/native-graphics-source.zip',
             'Pixel Revival/app/build/rust-nes-target/release/mesen_player.dll',
             'Pixel Revival/app/LICENSE',
             'Pixel Revival/app/THIRD-PARTY-LICENSES/Python-LICENSE.txt',
@@ -181,20 +178,27 @@ def verify_archive(archive):
         if missing:
             raise RuntimeError('Missing package files: ' + ', '.join(sorted(missing)))
         runtime_prefix = 'Pixel Revival/app/tools/common-runtime/'
-        core = zf.read(runtime_prefix + 'common/revival_graphics.dll')
-        shim = zf.read(runtime_prefix + 'common/revival_graphics_jni.dll')
-        runtime_hashes = json.loads(zf.read(runtime_prefix + 'common/runtime-hashes.json'))
-        expected_files = runtime_hashes.get('files', {})
-        core_hash = hashlib.sha256(core).hexdigest()
-        shim_hash = hashlib.sha256(shim).hexdigest()
-        if expected_files != {
-                'common/revival_graphics.dll': core_hash,
-                'common/revival_graphics_jni.dll': shim_hash}:
-            raise RuntimeError('Packaged graphics DLL hashes do not match the runtime manifest.')
-        for system in ('jme', 'nes'):
-            manifest = json.loads(zf.read(runtime_prefix + f'{system}/graphics-runtime.json'))
-            if manifest.get('build_id') != core_hash or manifest.get('dll') != '../common/revival_graphics.dll':
-                raise RuntimeError(f'Packaged {system} manifest does not identify the common renderer.')
+        if any(name.startswith(runtime_prefix) for name in names):
+            optional_required = {runtime_prefix + name for name in (
+                'common/revival_graphics.dll', 'common/revival_graphics_jni.dll',
+                'common/runtime-hashes.json', 'jme/graphics-runtime.json',
+                'nes/graphics-runtime.json', 'source/native-graphics-source.zip')}
+            if optional_required - names:
+                raise RuntimeError('Incomplete optional common graphics payload.')
+            core = zf.read(runtime_prefix + 'common/revival_graphics.dll')
+            shim = zf.read(runtime_prefix + 'common/revival_graphics_jni.dll')
+            runtime_hashes = json.loads(zf.read(runtime_prefix + 'common/runtime-hashes.json'))
+            expected_files = runtime_hashes.get('files', {})
+            core_hash = hashlib.sha256(core).hexdigest()
+            shim_hash = hashlib.sha256(shim).hexdigest()
+            if expected_files != {
+                    'common/revival_graphics.dll': core_hash,
+                    'common/revival_graphics_jni.dll': shim_hash}:
+                raise RuntimeError('Packaged graphics DLL hashes do not match the runtime manifest.')
+            for system in ('jme', 'nes'):
+                manifest = json.loads(zf.read(runtime_prefix + f'{system}/graphics-runtime.json'))
+                if manifest.get('build_id') != core_hash or manifest.get('dll') != '../common/revival_graphics.dll':
+                    raise RuntimeError(f'Packaged {system} manifest does not identify the common renderer.')
         top = {name.split('/')[1] for name in names if len(name.split('/')) > 1}
         if top != {'Pixel Revival.exe', 'README.txt', 'app', 'data'}:
             raise RuntimeError(f'Unexpected top-level package files: {top}')
@@ -232,8 +236,12 @@ def make_archive():
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--include-common-graphics', action='store_true',
+                        help='Bundle the optional verified renderer from build/common-runtime.')
+    options = parser.parse_args()
     make_runtime()
-    add_assets()
+    add_assets(include_common_graphics=options.include_common_graphics)
     archive, digest = make_archive()
     print(f'Created {archive} ({archive.stat().st_size:,} bytes)', flush=True)
     print(f'SHA-256: {digest}', flush=True)

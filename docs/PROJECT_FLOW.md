@@ -49,7 +49,7 @@ flowchart TD
     N --> NP["RustCore C ABI adapter"]
 ```
 
-`app.py` is the composition root. It creates the recipe/backend provider, the shared artwork service through the Java ME library, the NES capture adapter and the system router. This construction dependency does not make Java ME responsible for NES emulation. NES behavior enters the shared service through `WorkspaceIntegration`, keeping capture interpretation and pack generation outside generic scheduling.
+`app.py` is the composition root. It creates the recipe/backend provider, one shared artwork service injected into both system libraries, the NES capture adapter and the system router. The shared service lifetime belongs to the application; neither backend owns the other. NES behavior enters the shared service through `WorkspaceIntegration`, keeping capture interpretation and pack generation outside generic scheduling.
 
 The UI requests operations through `ApplicationLibrary`. `GameRef(system, id)` preserves ownership across filtered views and asynchronous callbacks. `ImportRequest` makes the selected system and artwork backend explicit. Each backend owns import, workspace, preparation, metadata and launch behavior through `SystemBackend`; adding a backend also requires registration, presentation and storage integration. It is not sufficient to add another file extension.
 
@@ -70,7 +70,7 @@ Java ME runs in a separate JVM using its compatibility GPU renderer or per-game 
 
 NES runs in the Python process through the Rust C ABI. The emulator worker owns core mutation and audio production. A separate display worker holds at most two immutable frames; Tk owns widgets and teardown. Comparison synchronizes the two NES players at frame boundaries and plays audio only from Enhanced. There is no external managed NES player in the active launch path.
 
-The former plan to render both emulators through one shared graphics implementation is historical. Some native build and packaging support remains; it does not describe the selected playback paths.
+The former plan to render both emulators through one shared graphics implementation is historical. Native build support remains, with explicit optional packaging; it does not describe the selected playback paths.
 
 ## Why the NES player changed
 
@@ -108,8 +108,8 @@ The two standalone columns describe normal launcher Play for **both systems**.
 | Behavior | Original | Enhanced | Comparison Original | Comparison Enhanced |
 |---|---|---|---|---|
 | Prepared base artwork | Off | On when ready | Off | On when ready |
-| Asset capture | On | On | Off | On |
-| Pose capture | On | On | Off | On |
+| Asset capture | On unless recording disabled | On unless recording disabled | Off | On unless recording disabled |
+| Pose capture | On unless recording disabled | On unless recording disabled | Off | On unless recording disabled |
 | Selected image/generated poses | Allowed | Allowed | Off | Allowed |
 
 **Enhance play** controls base artwork independently of **Use image** / **Use regenerated poses**. The latter two start unchecked and are mutually exclusive. Capturing poses does not itself select custom artwork. Comparison uses private save copies; captured Enhanced artwork is routed to the main game workspace.
@@ -213,7 +213,7 @@ Recovery combines stored job rows, idempotent capture-event ingestion and explic
 
 NES display drops stale pending frames rather than building an unbounded backlog behind a blocked screen. Audio is drained from the core and delivered by the Python audio adapter. Input profiles translate stored key tokens into each system's controls. The comparison controller owns paired key routing and release/close handling; NES additionally coordinates the two workers at frame boundaries. Shared input alone cannot make independently clocked JVM games deterministic.
 
-Application close first closes paired views, then standalone owned views, then shuts down the NES runtime, background executors and artwork service. If NES cannot finish saving safely, the launcher reports the shutdown failure and remains open. Worker teardown must finish before freeing native handles or destroying their presentation targets; the player safety checks cover this boundary. Closing the application is not a promise that every deferred enhancement job completed: durable rows permit recovery on restart.
+Application close requests cooperative session closure, including standalone Java ME through its stdin control pipe, and polls until players exit. It lets queued NES close/import handling finish before shutting down the runtime, background executors and artwork service. If NES cannot finish saving safely, the launcher reports the shutdown failure and remains open. Worker teardown must finish before freeing native handles or destroying their presentation targets; the player safety checks cover this boundary. Pending or failed completion commits keep the launcher and its lock alive for retry, with an explanatory status. Deferred unstarted enhancement jobs remain durable for restart; closing is not a request to finish the whole queue.
 
 ## Failure handling and trust boundaries
 
@@ -244,7 +244,7 @@ Archive resource names, capture paths and output manifests are validated at thei
 | Private comparison saves | Avoids writing paired playback progress into normal saves; captures need an explicit main-workspace destination |
 | Existing data paths retained across rename | Product branding can change without rewriting users' game libraries |
 
-The managed NES frontend and shared-renderer architecture are historical. Shared graphics staging still exists in build/package tooling and must be audited before removal. Its presence does not select that renderer for normal playback. The external upstream checkout is reference-only; current builds use the vendored source.
+The managed NES frontend and shared-renderer architecture are historical. Shared graphics source/build tooling remains for explicit use. Default packages omit its DLLs; `--include-common-graphics` requires a verified bundle under `build/common-runtime/`. The active Java ME launch explicitly selects legacy presentation, and NES uses its own presenter. The external upstream checkout is reference-only; current builds use the vendored source.
 
 ## Verification and design maintenance
 

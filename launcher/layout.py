@@ -185,6 +185,13 @@ def build_window(self, root, java_library):
         sprite_options, text='Use regenerated poses', variable=self.poses_play,
         command=lambda: self.select_sprite_playback('poses'), state='disabled')
     self.poses_play_checkbox.pack(side='left')
+    self.record_artwork = tk.BooleanVar(master=root, value=True)
+    self.record_checkbox = ttk.Checkbutton(play_panel, text='Record artwork and pose candidates',
+        variable=self.record_artwork, command=self.set_record_artwork)
+    self.record_checkbox.pack(anchor='w', pady=(0, 6))
+    self.readiness = tk.StringVar(master=root, value='Select a game to play.')
+    tk.Label(play_panel, textvariable=self.readiness, bg=self.panel, fg='#9db7cc',
+             font=('Segoe UI', 9), justify='left', wraplength=420).pack(fill='x', pady=(0, 8))
     self.compare_play_button = ttk.Button(play_panel, text='Compare side by side',
                                           command=self.play_comparison)
     self.compare_play_button.pack(anchor='w', pady=(0, 8))

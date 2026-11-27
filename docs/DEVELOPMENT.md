@@ -15,7 +15,7 @@ cargo build --release --manifest-path rust-nes/Cargo.toml -p mesen-player --targ
 python app.py
 ```
 
-`systems/nes/rust_core.py` loads the newest existing `mesen_player.dll` or `mesen_player_next.dll` under `build/rust-nes-target/release/`. `RUST_NES_DLL` overrides discovery for an explicit build. A running process keeps its loaded DLL; restart to pick up changes. Do not build or edit the external upstream checkout. New vendored-core changes require the approval specified in `AGENTS.md`.
+`systems/nes/rust_core.py` loads only the standard `mesen_player.dll` under `build/rust-nes-target/release/`. `RUST_NES_DLL` overrides discovery for an explicit build, including `_next` experiments. Player logs record the selected DLL path, hash and ABI. A running process keeps its loaded DLL; restart to pick up changes. Do not build or edit the external upstream checkout. New vendored-core changes require the approval specified in `AGENTS.md`.
 
 Base ABI is 1. Optional pose protocol 2 reports actual fetched sprites; old libraries retain the debug-read fallback. Journals write version 2 and read versions 1/2. Pose observation does not change save-state serialization. See [Rust build notes](../rust-nes/README.md).
 
@@ -48,14 +48,24 @@ Rust checks use `cargo test --manifest-path rust-nes/Cargo.toml --target-dir bui
 
 ## Portable Windows ZIP
 
-The existing packaging script still stages the shared native graphics runtime. Its presence in a ZIP is not evidence that active players use it. Until dependencies are audited, build that staging dependency as required by the script:
+The default package contains the active Java ME and NES runtimes. Build the Java player and standard Rust library first:
 
 ```powershell
-python tools/build_graphics.py --generator 'Visual Studio 17 2022'
 python -m pip install pyinstaller==6.22.3
 python tools/package_windows.py
 ```
 
-The native build requires CMake, Visual Studio 2022 x64 C++ tools/Windows SDK and a JDK with JNI headers (`JAVA_HOME`). Build the Java player and Rust library first. The packager copies the standard `mesen_player.dll`, so ensure it is the intended build rather than relying on a newer `_next.dll`. Output goes to `build/windows-release/Pixel-Revival-Windows-x64-preview.zip`, containing `Pixel Revival/Pixel Revival.exe`; optional AI setup remains separate. Earlier previews retain their original filenames until rebuilt. Preserve the existing portable `data/` directory when upgrading.
+The historical shared renderer is optional. To include it explicitly, build its verified bundle into `build/common-runtime/`, then run:
+
+```powershell
+python tools/build_graphics.py --generator 'Visual Studio 17 2022'
+python tools/package_windows.py --include-common-graphics
+```
+
+Only this optional renderer build requires CMake, Visual Studio C++ tools/Windows SDK and JNI headers. Existing historical source and evidence remain in place. Default packages do not require that build or scan experiment directories for it.
+
+Output: `build/windows-release/Pixel-Revival-Windows-x64-preview.zip`, containing `Pixel Revival/Pixel Revival.exe`. Preserve the portable `data/` directory when upgrading. `Pixel Revival.exe --check-runtime` validates bundled Java player control support and loads/checks the native ABI without opening Tk or a game. It is a dependency smoke check, not gameplay acceptance.
+
+CI tests Python 3.12 and 3.14, runs wrapper and focused core collector tests, builds Java, creates the default portable package and runs its dependency check. Those workflow additions require a future CI run; local fixture checks do not substitute for a completed clean-runner package build.
 
 Keep generated binaries under `build/` and upstream checkouts under `vendor/`. Preserve games, saves, captures, caches and permanent `local-work/` history. Do not stage or publish without explicit instruction.

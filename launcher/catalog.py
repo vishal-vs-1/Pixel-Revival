@@ -106,6 +106,9 @@ class LauncherCatalog:
             self.nes_runtime_info.set('The NES player has not been set up.')
         self._refresh_control_profile_controls(self.game_if_selected())
         self.playable_artwork.refresh(self.game_if_selected())
+        if hasattr(self, 'record_checkbox'):
+            self.record_checkbox.configure(state='normal' if self.game_if_selected() else 'disabled')
+        self._refresh_readiness()
         self._update_row_actions()
 
     def _update_row_actions(self):
@@ -149,6 +152,8 @@ class LauncherCatalog:
         selected = self.tree.selection()
         if selected and selected[0] in self.games:
             game = self.games[selected[0]]
+            if hasattr(self, 'record_artwork'):
+                self.record_artwork.set(game.get('record_artwork', True))
             if GameRef.from_metadata(game).system==NES:
                 self._show_nes_game(game)
                 self._refresh_control_profile_controls(game)
@@ -235,6 +240,7 @@ class LauncherCatalog:
             self._preview_future=(request,future)
 
     def _show_java_artwork(self, game):
+        self._refresh_readiness()
         work=game.get('asset_work',{})
         waiting=work.get('QUEUED',0)+work.get('DEFERRED',0)
         count=work.get('READY',0) if work else self._preview_count
@@ -314,6 +320,7 @@ class LauncherCatalog:
         self.cover.configure(image='',text='NES',width=0)
 
     def _show_nes_artwork(self, game):
+        self._refresh_readiness()
         work=game.get('asset_work',{})
         summary=None
         if not work:

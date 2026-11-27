@@ -21,6 +21,7 @@ class ApplicationLibrary:
         self._lock = RLock()
         self._close_lock = Lock()
         self._closed = Event()
+        self._shutdown_complete = False
 
     @staticmethod
     def _view(backend, game):
@@ -192,9 +193,14 @@ class ApplicationLibrary:
                 return
             backend.recover_assets(on_error, self._closed.is_set)
 
+    def stop_recovery(self):
+        self._closed.set()
+
     def close(self, timeout=1.0):
         with self._close_lock:
-            if self._closed.is_set():
-                return
+            if self._shutdown_complete:
+                return True
             self._closed.set()
-        self.asset_service.close(timeout=timeout)
+        completed = self.asset_service.close(timeout=timeout)
+        self._shutdown_complete = completed is not False
+        return self._shutdown_complete

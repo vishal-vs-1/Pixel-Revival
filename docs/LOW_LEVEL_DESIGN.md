@@ -27,11 +27,11 @@ System IDs remain `j2me` and `nes`. `GameRef` validates both system and game ID;
 | Use image | `pose_mode='record-replace'` | `player_replacement=True` |
 | Use regenerated poses | `pose_mode='regenerated'` | `player_regenerated=True` |
 
-Java ME recording-only launch explicitly passes `jme.replacePoses=false`. Generated playback separates the replacement reader from the main capture destination. Comparison supplies pose/replacement options only to Enhanced. NES standalone Play explicitly requests both tile capture and pose capture; those options must not be inferred from the Enhance checkbox. Backend defaults can differ from the normal launcher's explicit selection, so new callers must choose their intended mode.
+Java ME recording-only launch explicitly passes `jme.replacePoses=false`. Generated playback separates the replacement reader from the main capture destination. Comparison supplies pose/replacement options only to Enhanced. The optional Boolean `record_artwork` defaults true when absent in both systems; false disables new tile/pose recording without disabling prepared artwork or selected replacements. NES standalone Play requests both tile capture and pose capture unless the saved Record artwork and pose candidates control is off; those options must not be inferred from the Enhance checkbox. Backend defaults can differ from the normal launcher's explicit selection, so new callers must choose their intended mode.
 
 ## Java ME integration
 
-[JavaMeSystem](../systems/jme/system.py) adapts the [Java ME library](../systems/jme/library.py) to the shared system contract. The library owns imported originals, metadata, control profiles and the shared service instance. [Resource readers](../systems/jme/resources/) inspect supported archive/image structures; [asset contracts](ASSET_DECODING.md) describe validation and provenance.
+[JavaMeSystem](../systems/jme/system.py) adapts the [Java ME library](../systems/jme/library.py) to the shared system contract. The library owns imported originals, metadata and control profiles. The application constructs and injects the shared artwork service; standalone library callers retain the compatible constructor fallback. [Resource readers](../systems/jme/resources/) inspect supported archive/image structures; [asset contracts](ASSET_DECODING.md) describe validation and provenance.
 
 [JavaMePlayback](../systems/jme/playback.py) resolves Java, builds player arguments and launches patched FreeJ2ME-Plus. JVM properties select rendering, texture roots, capture and pose behavior. [PoseArtwork](../systems/jme/pose_artwork.py) owns saved pose arguments and artwork preparation. Integration code lives under [emulator-src](../emulator-src/) and [patches](../tools/patches/); it is built into the player rather than loaded from Python during each draw.
 
@@ -49,7 +49,7 @@ Java ME recording-only launch explicitly passes `jme.replacePoses=false`. Genera
 | [Rust comparison](../systems/nes/rust_comparison.py) | Own paired NES playback, views and lifecycle |
 | [Comparison clock](../systems/nes/comparison_clock.py) | Coordinate paired frame progression |
 
-Base ABI version is 1. `RUST_NES_DLL` explicitly overrides discovery; otherwise the newest existing standard/`_next` DLL under `build/rust-nes-target/release/` is selected. The Windows packager copies the standard DLL. Restart is required to change an already loaded native library.
+Base ABI version is 1. `RUST_NES_DLL` explicitly overrides discovery; otherwise only the standard DLL under `build/rust-nes-target/release/` is selected. A `_next` DLL requires an explicit override, regardless of timestamps. The Windows packager copies the standard DLL. RustCore records the selected absolute path, SHA-256 and ABI, and player logs include that identity. Restart is required to change an already loaded native library.
 
 The player worker owns mutable native operations during emulation. Display receives copied frame data rather than a mutable core buffer. `FramePresenter` retains two pending frames when pacing is enabled and one otherwise, discarding the oldest on overflow. It records presentation exceptions and rejects further submission after failure or stop. Teardown must stop work before native handle destruction.
 
@@ -107,3 +107,47 @@ Product naming is Pixel Revival for windows, messages and future Windows package
 | Pose matching and tracking | `tests/test_nes_pose.py`, `tests/test_nes_pose_tracking.py` |
 
 Confirm test filenames and fixture behavior before execution; some integration checks need built runtimes or open windows. Documentation changes require source/link review. Naming changes need package/path checks, without launching user applications. Evidence and unrun acceptance remain explicit in [Status](STATUS.md) and the append-only [experiment log](EXPERIMENTS.md).
+
+## Playback session state and shutdown contract
+
+[PlaybackSession](../systems/playback_session.py) is the canonical launcher record: `ref`, `process`, `log`, `recording`, and optional monotonic `closing_at`. Its process/log iteration and indexing preserve existing telemetry/settings consumers. Production no longer needs separate player-reference and recording-owner dictionaries; tuple-shaped test/legacy callers are adapted at the close boundary.
+
+| State | Owner and transition |
+|---|---|
+| Running | Backend owns emulation/process; launcher owns the session record |
+| Closing requested | Session calls the owned view/process cooperative close exactly once and records `closing_at` |
+| Waiting | Tk polls without destroying the launcher or releasing its single-instance lock |
+| Close delayed beyond 10 seconds | Session reports an error and retains ownership; no forced process kill |
+| Exited | Event polling removes the session and begins any registered NES recording import |
+| Importing | Existing per-game guard protects the journal and saved poses; launcher waits for completion |
+| Stopping services | Recovery has been stopped, active library operations/deletions have completed, sessions/imports are gone |
+| Closed | Native shutdown and artwork service acknowledge completion; root is destroyed |
+
+JavaProcess delegates ordinary Popen operations and adds `request_close()` through stdin. Standalone launch sets `jme.launcherControl=true`; ComparisonInput accepts the existing `!CLOSE` command or EOF without enabling comparison-only input/window behavior. Both CPU and GPU integrations route closure to their existing window-owning thread. This follows normal player-close behavior; it cannot invent a game's own save action or guarantee every game writes progress at exit. Unknown/old players without cooperative close must be closed by the user; they are never force-killed to finish application exit.
+
+New launches/import scheduling are rejected once closing begins. In-flight recovery is asked to stop and signals an event when its current bounded operation returns. In-flight library operations, deletion workers and after-close import are allowed to finish before service disposal. Artwork shutdown returns false while conversion threads or uncommitted outcomes remain; Tk keeps polling and displays a status. Persistent storage errors can therefore keep the launcher open rather than silently dropping completion state.
+
+## Artwork completion transaction and recovery contract
+
+Each dispatched `_Work` carries an immutable lease identity and produces one `_Outcome`: work, optional output path/error, elapsed time, and retry/resource-deferral flags. Dispatch remains bounded to one active batch, at most 512 images. The following phase is distinct from conversion:
+
+| Outcome | Store transition |
+|---|---|
+| Valid converted output | `mark_ready_batch` acknowledges accepted leases in one transaction |
+| Resource pressure | `defer` stores a retry time |
+| Batch fallback | `reschedule` returns work through normal admission |
+| Conversion failure | `mark_failed` records the error and existing bounded conversion retry policy |
+| Store raises during any transition | Retain the outcome and active slot, log the workspace/error, expose `completion_error`, retry persistence after one second |
+| Store rejects stale lease | Discard that old completion without replacing the successor's result |
+
+An active slot is released only after its transition has returned. Failed commits retain existing outputs, so retrying a database write does not rerun inference. Lease renewal continues while the service runs. Retries are bounded in retained memory by the dispatched batch; repeated failures wait rather than allocating another queue or launching another batch. Successful acknowledgement clears the visible completion error and enables publication. A failed database count read uses a marked last-known snapshot (`counts_unavailable=true`), allowing the completion error to remain visible.
+
+This is in-process retry, not a new persistent outbox. A crash during the retry interval still relies on durable lease/job recovery at restart and may require conversion again. No schema change is made to `asset-cache.sqlite`. Output files alone do not establish READY or loaded-in-player state.
+
+## Catalog and preference compatibility
+
+`Library.games()` reads bounded metadata and optional inspection reports without running decoders, preparing images or writing migrations. Background recovery owns `_migrate_catalog_entry`; a per-game registration guard excludes deletion during that work. Metadata upgrades merge only their changed fields into the latest record under the library lock, preserving newly saved controls/recording preferences. Recovery completion queues a catalog refresh on Tk.
+
+`record_artwork` is an optional Boolean in both game records; absent means true for backward compatibility. Invalid types are rejected. NES schema remains 1 because existing records are still readable without transformation. The control affects later launches and cannot change while that game is open. It disables new artwork/pose recording while retaining cached base enhancement and selected custom replacements. Comparison keeps Original capture disabled under either setting. Historical `capture_policy` retains its separate existing format and is not repurposed.
+
+Player identity confirmation, occlusion improvements and semantic scene acceptance remain deferred with the hook work. No proposed confirmation states are documented as implemented behavior.

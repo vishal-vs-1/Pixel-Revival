@@ -105,6 +105,10 @@ class PipelineTests(unittest.TestCase):
             path=library.workspace(identity)/'game.json'
             game={'id':identity,'name':'MrBeanRacer2','width':240,'height':320}
             atomic_json(path,game)
+            self.assertEqual(library.games()[0]['width'],240)
+            errors=[]
+            library.recover_assets(errors.append,lambda:False)
+            self.assertEqual(errors,[])
             migrated=library.games()[0]
             self.assertEqual((migrated['width'],migrated['height']),(176,220))
             migrated.update(width=240,height=320,screen_source='manual')
